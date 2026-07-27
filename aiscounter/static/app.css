@@ -1,0 +1,319 @@
+/* Dark by design: these are dim fluorescence images, and a bright chrome around them
+   destroys your ability to judge the faint traces. */
+:root {
+  --bg: #0e1116;
+  --panel: #161b23;
+  --panel-2: #1d242e;
+  --line: #2a333f;
+  --text: #e6edf3;
+  --dim: #8b97a6;
+  /* --trace is overwritten at runtime from config.skeleton_color; this is only the value
+     used for the instant before the first state arrives. */
+  --trace: magenta;
+  /* Likewise set at runtime from config.skeleton_width. In px so the calc()s below can add
+     to it; non-scaling-stroke means these are screen pixels at any zoom. */
+  --tracew: 2px;
+  --trace-hot: #ffffff;
+  --selected: #7cf76b;
+  --excluded: #ff5252;
+  --marker: #ffd400;
+  --accent: #2f81f7;
+  --ok: #3fb950;
+  --warn: #d29922;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 5px 10px; cursor: pointer;
+}
+button:hover { background: #27303c; border-color: #3d4854; }
+button:active { transform: translateY(1px); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary:hover { background: #4b93f8; }
+/* Outlined rather than filled: exporting the whole run is a deliberate, occasional act, and
+   it should not compete with save for the eye on every image. */
+button.export { border-color: var(--ok); color: var(--ok); font-weight: 600; }
+button.export:hover { background: rgba(63,185,80,.14); border-color: var(--ok); }
+button.icon { padding: 3px 9px; font-size: 15px; line-height: 1; }
+kbd {
+  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: #0b0e13; border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 4px;
+  padding: 3px 5px; color: var(--dim);
+}
+
+/* ---------- top bar ---------- */
+#topbar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 8px 12px; background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  height: 48px;
+}
+.brand { font-weight: 700; letter-spacing: .2px; color: var(--dim); }
+.nav { display: flex; align-items: center; gap: 6px; }
+.counter { color: var(--dim); font-variant-numeric: tabular-nums; min-width: 54px; text-align: center; }
+.imgname {
+  flex: 1; min-width: 0; color: var(--dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.imgname .derived { color: var(--warn); }
+.imgname .dirty { color: var(--warn); font-weight: 700; }
+.imgname .saved { color: var(--ok); }
+
+.modes { display: flex; gap: 6px; }
+.mode b {
+  display: inline-block; width: 14px; margin-right: 4px;
+  color: var(--dim); font-weight: 700;
+}
+.mode.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mode.on b { color: #fff; }
+#mode-delete.on { background: var(--excluded); border-color: var(--excluded); }
+#mode-select.on { background: var(--selected); border-color: var(--selected); color: #06210a; }
+#mode-select.on b { color: #06210a; }
+.actions { display: flex; gap: 6px; }
+#excluded.on { background: var(--excluded); border-color: var(--excluded); color: #fff; }
+
+/* ---------- progress ---------- */
+#progress { height: 2px; background: transparent; }
+#progressbar {
+  height: 100%; width: 0; background: var(--accent);
+  transition: width .12s linear; opacity: 0;
+}
+#progressbar.busy { opacity: 1; }
+#progressbar.indeterminate {
+  width: 100% !important; opacity: 1;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: sweep 1s linear infinite;
+}
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* ---------- layout ---------- */
+main { display: flex; height: calc(100% - 48px - 2px - 26px); }
+
+#stage { position: relative; flex: 1; min-width: 0; background: #05070a; }
+#viewport {
+  position: absolute; inset: 0; overflow: hidden;
+  cursor: grab; touch-action: none;
+}
+#viewport.grabbing { cursor: grabbing; }
+#viewport.add { cursor: crosshair; }
+#viewport.delete { cursor: crosshair; }
+#viewport.splice { cursor: crosshair; }
+#viewport.select { cursor: cell; }
+
+#canvas { position: absolute; transform-origin: 0 0; will-change: transform; }
+#base { display: block; image-rendering: pixelated; user-select: none; -webkit-user-drag: none; }
+#overlay { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
+
+/* Traces. Vector-effect keeps strokes readable at any zoom. */
+.trace {
+  fill: none; stroke: var(--trace); stroke-width: var(--tracew);
+  vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round;
+  pointer-events: stroke; cursor: pointer;
+}
+.trace.excluded { stroke: var(--excluded); stroke-dasharray: 5 4; opacity: .75; }
+/* Hover and selection stay a fixed step above whatever the base width is, so the highlight
+   remains visible when the traces are drawn thick. */
+.trace.hot { stroke: var(--trace-hot); stroke-width: calc(var(--tracew) + 1.5px); }
+/* Selection outranks hover: while picking traces to join, what is picked must stay legible
+   even under the cursor. */
+.trace.selected, .trace.selected.hot { stroke: var(--selected); stroke-width: calc(var(--tracew) + 2px); }
+/* Invisible fat stroke so clicking near a thin trace still hits it. Never narrower than the
+   trace it has to cover. */
+.hit {
+  fill: none; stroke: transparent; stroke-width: max(14px, calc(var(--tracew) + 8px));
+  vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: pointer;
+}
+.marker { fill: var(--marker); stroke: none; }
+.tracelabel {
+  fill: var(--marker); font: 700 10px/1 ui-monospace, Menlo, monospace;
+  paint-order: stroke; stroke: #000; stroke-width: 3px; stroke-linejoin: round;
+  pointer-events: none; user-select: none;
+}
+.tracelabel.excluded { fill: var(--excluded); }
+
+.hint {
+  position: absolute; left: 50%; top: 10px; transform: translateX(-50%);
+  background: rgba(10,13,18,.9); border: 1px solid var(--line);
+  padding: 5px 12px; border-radius: 20px; color: var(--dim);
+  pointer-events: none; opacity: 0; transition: opacity .15s;
+}
+.hint.show { opacity: 1; }
+
+/* ---------- selection ---------- */
+.selbar {
+  position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%) translateY(6px);
+  display: flex; align-items: center; gap: 8px;
+  background: rgba(10,13,18,.95); border: 1px solid var(--selected);
+  padding: 6px 8px 6px 14px; border-radius: 22px;
+  opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s;
+}
+.selbar.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+#selcount { color: var(--selected); font-variant-numeric: tabular-nums; }
+#selbar .primary { background: var(--selected); border-color: var(--selected); color: #06210a; }
+#selbar .primary:hover { background: #93ff82; }
+#selbar .primary:disabled { opacity: .45; cursor: not-allowed; }
+
+/* The rubber band lives outside the zoom transform, in screen space, so it stays a crisp
+   1px box at any zoom instead of scaling with the image. */
+.band { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.band rect {
+  fill: rgba(124,247,107,.10); stroke: var(--selected);
+  stroke-width: 1; stroke-dasharray: 4 3; visibility: hidden;
+}
+.band.on rect { visibility: visible; }
+
+#list li.selected { background: rgba(124,247,107,.14); box-shadow: inset 2px 0 0 var(--selected); }
+#list li.selected .num { background: var(--selected); color: #06210a; }
+
+#zoombox {
+  position: absolute; right: 10px; bottom: 10px;
+  display: flex; align-items: center; gap: 4px;
+  background: rgba(10,13,18,.9); border: 1px solid var(--line);
+  border-radius: 8px; padding: 4px;
+}
+#zoomlevel { color: var(--dim); min-width: 46px; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* ---------- sidebar ---------- */
+#sidebar {
+  width: 262px; flex: none; background: var(--panel);
+  border-left: 1px solid var(--line); display: flex; flex-direction: column;
+}
+.stats {
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px;
+}
+.stat { display: flex; flex-direction: column; }
+.stat .k { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
+.stat .v { font-size: 15px; font-variant-numeric: tabular-nums; }
+
+#warnbox:empty { display: none; }
+.warn {
+  margin: 8px; padding: 7px 9px; border-radius: 6px;
+  background: rgba(210,153,34,.12); border: 1px solid rgba(210,153,34,.4);
+  color: var(--warn); font-size: 11px;
+}
+
+/* ---------- controls ---------- */
+.controls {
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 12px;
+}
+.ctl { display: flex; flex-direction: column; gap: 6px; }
+.ctl.row { flex-direction: row; align-items: center; justify-content: space-between; }
+.ctl span, .ctlhead {
+  color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+}
+.ctlhead { display: flex; justify-content: space-between; align-items: baseline; }
+.ctlhead output {
+  color: var(--text); font-size: 12px; text-transform: none; letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+.controls input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 4px; margin: 4px 0;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px;
+}
+.controls input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: none; cursor: pointer;
+}
+.controls input[type=range]::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: none; cursor: pointer;
+}
+.controls input[type=color] {
+  width: 42px; height: 24px; padding: 0; cursor: pointer;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px;
+}
+.controls input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+.controls input[type=color]::-webkit-color-swatch { border: none; border-radius: 3px; }
+
+/* Quiet by design: the point is that autosave needs no attention, so it states where the
+   file is and otherwise stays out of the way. It only raises its voice when it fails. */
+.autosave {
+  padding: 7px 12px; border-bottom: 1px solid var(--line);
+  color: var(--dim); font-size: 10px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.autosave.err { color: var(--excluded); }
+.autosave b { color: var(--ok); font-weight: 600; }
+
+.listhead {
+  display: flex; justify-content: space-between;
+  padding: 7px 12px; color: var(--dim);
+  font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 1px solid var(--line);
+}
+#list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+#list li {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; border-bottom: 1px solid rgba(42,51,63,.5);
+  cursor: pointer;
+}
+#list li:hover { background: var(--panel-2); }
+#list li.hot { background: #24303f; }
+#list li.excluded { opacity: .5; }
+#list li.excluded .len { text-decoration: line-through; }
+#list .num {
+  width: 22px; height: 22px; flex: none; border-radius: 4px;
+  background: var(--trace); color: #000; font-weight: 700; font-size: 10px;
+  display: grid; place-items: center;
+}
+#list li.excluded .num { background: var(--excluded); color: #fff; }
+#list .len { flex: 1; font-variant-numeric: tabular-nums; }
+#list .flag { color: var(--warn); font-size: 11px; }
+#list .del {
+  opacity: 0; padding: 1px 7px; font-size: 11px;
+  background: transparent; border-color: transparent; color: var(--dim);
+}
+#list li:hover .del { opacity: 1; }
+#list .del:hover { color: var(--excluded); border-color: var(--excluded); }
+
+/* ---------- status ---------- */
+#status {
+  height: 26px; display: flex; align-items: center; justify-content: space-between;
+  padding: 0 12px; background: var(--panel); border-top: 1px solid var(--line);
+  color: var(--dim); font-size: 12px;
+}
+#statusmsg.flash { color: var(--ok); }
+#statusmsg.err { color: var(--excluded); }
+
+#toast {
+  position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%) translateY(8px);
+  background: var(--panel-2); border: 1px solid var(--line);
+  padding: 7px 14px; border-radius: 8px;
+  opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s;
+}
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.err { border-color: var(--excluded); color: var(--excluded); }
+
+/* ---------- help ---------- */
+#help {
+  position: fixed; inset: 0; background: rgba(5,7,10,.75);
+  display: grid; place-items: center; z-index: 50;
+}
+#help.hidden { display: none; }
+.helpcard {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 20px 24px; min-width: 420px;
+}
+.helpcard h2 { margin: 0 0 12px; font-size: 15px; }
+.helpcard table { border-collapse: collapse; width: 100%; }
+.helpcard td { padding: 5px 8px 5px 0; vertical-align: top; }
+.helpcard td:first-child { white-space: nowrap; }
+.helpcard td.sep { color: var(--dim); font-size: 11px; padding-top: 10px; }
+#helpclose { margin-top: 14px; width: 100%; }

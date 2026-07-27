@@ -1,0 +1,11 @@
+# Pinned to the versions the MATLAB comparison was validated against.
+numpy>=1.26
+scipy>=1.11
+scikit-image>=0.22     # bwmorph 'thin' equivalent
+tifffile>=2024.1.1
+matplotlib>=3.8        # annotated PNG + the interactive reviewer
+openpyxl>=3.1          # XLSX report
+csaps>=1.3             # MATLAB-compatible smoothing spline (the original's csaps p=0.3)
+czifile>=2019.7.2      # optional: .czi input
+natsort>=8.0           # optional: natural ordering when walking folders
+pytest>=7.0            # tests only

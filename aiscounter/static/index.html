@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>aiscounter</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">aiscounter</div>
+
+  <div class="nav">
+    <button id="prev" class="icon" title="Previous image (←)">&#8249;</button>
+    <span id="imgcount" class="counter">0 / 0</span>
+    <button id="next" class="icon" title="Next image (→)">&#8250;</button>
+  </div>
+
+  <div id="imgname" class="imgname">loading&hellip;</div>
+
+  <div class="modes">
+    <button id="mode-add" class="mode" data-mode="add" title="Add mode (A)">
+      <b>A</b> add
+    </button>
+    <button id="mode-delete" class="mode" data-mode="delete" title="Delete mode (D)">
+      <b>D</b> delete
+    </button>
+    <button id="mode-select" class="mode" data-mode="select"
+            title="Select mode (M) — click traces or drag a box, then join (J)">
+      <b>M</b> select
+    </button>
+    <button id="mode-splice" class="mode" data-mode="splice"
+            title="Splice mode (X) — click a trace where it should be cut in two">
+      <b>X</b> splice
+    </button>
+  </div>
+
+  <div class="actions">
+    <button id="undo" title="Undo (U or Cmd/Ctrl+Z)">undo</button>
+    <button id="reset" title="Reset to automatic detections (R)">reset</button>
+    <button id="excluded" title="Show excluded traces (E)">excluded</button>
+    <button id="save" class="primary" title="Save report (S)">save</button>
+    <button id="savenext" class="primary" title="Save and go to next image (Enter)">save &amp; next &crarr;</button>
+    <button id="exportall" class="export"
+            title="Export everything analysed so far (G) — a PNG + XLSX per image, plus a combined workbook and CSV">export all</button>
+  </div>
+</header>
+
+<div id="progress"><div id="progressbar"></div></div>
+
+<main>
+  <section id="stage">
+    <div id="viewport">
+      <div id="canvas">
+        <img id="base" alt="">
+        <svg id="overlay" xmlns="http://www.w3.org/2000/svg"></svg>
+      </div>
+    </div>
+
+    <div id="hint" class="hint"></div>
+
+    <!-- Appears only while something is selected, so the join action is where the user is
+         looking (on the image) rather than in the top bar they are not. -->
+    <div id="selbar" class="selbar">
+      <span id="selcount">0 selected</span>
+      <button id="join" class="primary" title="Join the selected traces into one AIS (J)">join</button>
+      <button id="selclear" title="Clear selection (Esc)">clear</button>
+    </div>
+
+    <svg id="band" class="band"><rect id="bandrect" /></svg>
+
+    <div id="zoombox">
+      <button id="zoomout" title="Zoom out (-)">&minus;</button>
+      <span id="zoomlevel">100%</span>
+      <button id="zoomin" title="Zoom in (+)">+</button>
+      <button id="zoomfit" title="Fit to window (0)">fit</button>
+    </div>
+  </section>
+
+  <aside id="sidebar">
+    <div id="stats" class="stats"></div>
+    <div id="warnbox"></div>
+
+    <div id="controls" class="controls">
+      <label class="ctl">
+        <span class="ctlhead">
+          <span>min AIS length</span>
+          <output id="minlenval">5.0 µm</output>
+        </span>
+        <input type="range" id="minlen" min="0" max="20" step="0.5" value="5"
+               title="Traces shorter than this are excluded (manual edits are never overruled)">
+      </label>
+      <label class="ctl">
+        <span class="ctlhead">
+          <span>max loop shape</span>
+          <output id="circval">off</output>
+        </span>
+        <input type="range" id="circ" min="0" max="1" step="0.01" value="1"
+               title="Excludes traces that curl back on themselves — 0 keeps only straight traces, 1 keeps everything. Loops are usually noise, not axons.">
+      </label>
+      <label class="ctl row">
+        <span>skeleton colour</span>
+        <input type="color" id="skelcolor" value="#ff00ff" title="Colour of drawn skeletons">
+      </label>
+      <label class="ctl">
+        <span class="ctlhead">
+          <span>skeleton thickness</span>
+          <output id="skelwidthval">2.0 px</output>
+        </span>
+        <input type="range" id="skelwidth" min="0.5" max="12" step="0.5" value="2"
+               title="Stroke width of drawn skeletons, on screen and in the saved PNG">
+      </label>
+    </div>
+
+    <div id="autosave" class="autosave"></div>
+
+    <div class="listhead">
+      <span>AIS</span><span>length</span>
+    </div>
+    <ul id="list"></ul>
+  </aside>
+</main>
+
+<div id="status">
+  <span id="statusmsg">starting&hellip;</span>
+  <span id="statusright"><kbd>?</kbd> keys</span>
+</div>
+
+<div id="toast"></div>
+
+<div id="help" class="hidden">
+  <div class="helpcard">
+    <h2>Keyboard</h2>
+    <table>
+      <tr><td><kbd>A</kbd></td><td>add mode &mdash; click near an AIS to trace it</td></tr>
+      <tr><td><kbd>D</kbd></td><td>delete mode &mdash; click a trace to remove it</td></tr>
+      <tr><td><kbd>M</kbd></td><td>select mode &mdash; click traces, or drag a box round them</td></tr>
+      <tr><td><kbd>J</kbd></td><td>join the selected traces into one AIS</td></tr>
+      <tr><td><kbd>X</kbd></td><td>splice mode &mdash; click a trace where it should divide</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>clear the selection, then back to view mode</td></tr>
+      <tr><td colspan="2" class="sep">Right-click always deletes, in any mode. Shift+click always adds.
+        In select mode drag to draw a box; hold <kbd>&#8997;</kbd> to pan instead.</td></tr>
+      <tr><td><kbd>Enter</kbd></td><td>save and go to the next image</td></tr>
+      <tr><td><kbd>S</kbd></td><td>save this image</td></tr>
+      <tr><td><kbd>G</kbd></td><td>export everything analysed so far</td></tr>
+      <tr><td colspan="2" class="sep">Results autosave to a CSV a couple of seconds after
+        every edit, so nothing is lost if the session ends unexpectedly.</td></tr>
+      <tr><td><kbd>&#8594;</kbd> <kbd>&#8592;</kbd></td><td>next / previous image</td></tr>
+      <tr><td><kbd>U</kbd> <kbd>&#8984;Z</kbd></td><td>undo</td></tr>
+      <tr><td><kbd>R</kbd></td><td>reset to automatic detections</td></tr>
+      <tr><td><kbd>E</kbd></td><td>show / hide excluded traces</td></tr>
+      <tr><td><kbd>+</kbd> <kbd>&minus;</kbd> <kbd>0</kbd></td><td>zoom in / out / fit</td></tr>
+      <tr><td colspan="2" class="sep">Scroll to zoom, drag to pan, double-click to zoom in.</td></tr>
+      <tr><td><kbd>?</kbd></td><td>this help</td></tr>
+    </table>
+    <button id="helpclose">close</button>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
