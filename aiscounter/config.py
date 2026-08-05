@@ -28,6 +28,17 @@ class AnalysisConfig:
     # --- automation-only knobs ----------------------------------------------------
     channel: int = 0                # CZI channel; the original always uses Ch1
     min_trace_pixels: int = 5       # skip components too small to spline meaningfully
+
+    auto_detect: bool = True
+    """Whether to pre-find every AIS before a human looks at the image.
+
+    Off is the original's workflow: nothing is measured until you click, and every record in
+    the report is one you chose. Segmentation still runs either way -- a click snaps to the
+    nearest component, so the components have to exist before the first click.
+
+    True here because that is what the library has always done and what a batch run needs;
+    the CLI defaults the other way and asks for ``--auto`` (see ``cli.py``)."""
+
     min_length_um: float = 5.0      # reject implausibly short traces
     max_length_um: float = 120.0    # reject runaway traces (the walk caps at 300 px anyway)
     drop_invalid: bool = True       # reject lengths the original's own bug made meaningless

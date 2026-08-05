@@ -130,6 +130,12 @@ function renderControls(data) {
     $('#skelwidthval').textContent = Number(s.skeletonWidth).toFixed(1) + ' px';
   }
 
+  // "reset to the automatic detections" is a lie when there were none: in manual mode the
+  // same key empties the image instead, and the button should say so.
+  $('#reset').title = s.auto === false
+    ? 'Clear this image and start again (R)'
+    : 'Reset to automatic detections (R)';
+
   renderAutosave(data.autosave);
 }
 
@@ -855,6 +861,9 @@ async function boot() {
   setStatus('analysing first image…');
   const data = await getState();
   if (data) { render(data, { fit: true }); setStatus('ready'); }
+  // Manual mode is nothing but clicking, so it opens in add mode: making the first thing the
+  // user does be pressing A to reach the only useful state is a step for nobody.
+  if (data && data.settings && data.settings.auto === false) setMode('add');
 }
 
 boot();

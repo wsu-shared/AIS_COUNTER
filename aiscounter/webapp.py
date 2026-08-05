@@ -348,6 +348,7 @@ class Session:
                     "components": result.segmentation.n_components,
                 },
                 "settings": {
+                    "auto": bool(self.config.auto_detect),
                     "minLength": round(float(self.config.min_length_um or 0.0), 2),
                     "minLengthMax": round(max(20.0, float(np.ceil(longest))), 2),
                     "maxCircularity": round(float(self.config.max_circularity), 2),
@@ -553,6 +554,8 @@ class Session:
             self.undo[index] = []
             self.dirty.discard(index)
         self.result_for(index, force=True)
+        if not self.config.auto_detect:
+            return "cleared — click to add each AIS"
         return "reset to automatic detections"
 
     def save(self, index: int) -> str:
@@ -755,10 +758,15 @@ def serve(path, config: AnalysisConfig | None = None, outdir=None, port: int = 8
     url = f"http://127.0.0.1:{port}/"
 
     print(f"aiscounter: {len(paths)} image(s)")
+    if config.auto_detect:
+        print("finding every AIS automatically; review, correct and save")
+    else:
+        print("manual: click each AIS to measure it   (--auto pre-finds them all)")
     print(f"open {url}   (ctrl-c to stop)")
     print(f"autosaving to {Path(session.output_dir) / AUTOSAVE_NAME}")
 
-    # Analyse the first image up front so the page has something the moment it loads.
+    # Analyse the first image up front so the page has something the moment it loads --
+    # in manual mode that is the load and segmentation, so the first click is instant too.
     threading.Thread(target=lambda: session.result_for(0), daemon=True).start()
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

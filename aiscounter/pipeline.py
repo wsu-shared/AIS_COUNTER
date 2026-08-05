@@ -564,6 +564,11 @@ def _rejection_reason(measurement: AISMeasurement, config: AnalysisConfig) -> st
 def analyse_image(path, config: AnalysisConfig | None = None, progress=None) -> AnalysisResult:
     """Load, segment, auto-detect and measure every AIS in one image.
 
+    With ``config.auto_detect`` off the detection pass is skipped and the result comes back
+    with no records: the image is loaded and segmented, ready for ``add_at`` to trace whatever
+    the user clicks. That is the original's workflow, and the segmentation still has to happen
+    because a click snaps to the nearest component.
+
     *progress* is an optional ``callable(stage: str, done: int, total: int)`` used to drive a
     UI. Stages are ``loading``, ``segmenting``, ``tracing`` and ``measuring``; ``total`` is 0
     when a stage has no meaningful count.
@@ -585,10 +590,14 @@ def analyse_image(path, config: AnalysisConfig | None = None, progress=None) -> 
         min_pixels=config.min_component_pixels,
     )
 
-    detections = detect_all(
-        seg,
-        min_trace_pixels=config.min_trace_pixels,
-        progress=lambda done, total: report("tracing", done, total),
+    detections = (
+        detect_all(
+            seg,
+            min_trace_pixels=config.min_trace_pixels,
+            progress=lambda done, total: report("tracing", done, total),
+        )
+        if config.auto_detect
+        else []
     )
 
     records = []

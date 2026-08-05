@@ -1,6 +1,7 @@
 # aiscounter
 
-Finds **every** AIS in an image and measures its length, instead of one per mouse click.
+Measures AIS lengths in a browser: click each one as the original does, or pass `--auto` to
+find **every** AIS in the image for you.
 
 A faithful Python port of `original/ais_auto.m`, validated numerically against MATLAB R2024b:
 eleven reference AIS across two images agree to the last decimal (lengths exact, intensity
@@ -30,24 +31,40 @@ optimistically, so they feel instant regardless.
 ## Use
 
 ```bash
-# one image -> annotated PNG + XLSX next to it
-.venv/bin/python -m aiscounter "example-images/MATLAB BB50 (TM,MDL,DMSO)/9691-19516-3730_b0c0x0-1388y0-1040_ORG.tif"
+# the default: browser reviewer, empty, click each AIS to measure it
+.venv/bin/python -m aiscounter "example-images/TM"
 
-# a whole folder, plus one combined workbook
-.venv/bin/python -m aiscounter "example-images/TM" --outdir results --combined results/ALL.xlsx
+# same, but every AIS is found for you first — review, correct, save
+.venv/bin/python -m aiscounter "example-images/TM" --auto
 
-# review each image in the browser before saving (add/delete, live progress)
-.venv/bin/python -m aiscounter "example-images/TM" --review
+# no UI: analyse a whole folder and write the reports, plus one combined workbook
+.venv/bin/python -m aiscounter "example-images/TM" --batch --outdir results --combined results/ALL.xlsx
 ```
 
 Point it at the raw `.tif`, the `- Processed method 2.5.tif`, a `.czi`, or a directory — the
 raw/processed pair is resolved for you, and processed files are never analysed twice.
 
-### Reviewing (`--review`)
+### Two defaults worth knowing
 
-Opens a browser UI at `http://127.0.0.1:8765`. Analysis runs on a worker thread and streams
+**The reviewer opens by default.** Every run is looked at by a human before anything is
+reported, which is what these measurements are for. `--batch` writes reports with no UI (and
+`--review` / `--web` still work, they are simply the default now).
+
+**Nothing is measured until you click.** This is the original's workflow: the reviewer starts
+empty and each record in the report is one you chose, seeded by your click exactly as
+`ais_auto.m` seeds by its own. `--auto` turns on the pass that pre-finds every AIS instead.
+`--batch` implies `--auto`, since a batch run has nobody to do the clicking.
+
+Manual mode opens in **add** mode for you, and the image is segmented up front, so the first
+click is as fast as every later one. Click *near the start of the AIS*: the walk begins where
+you click, so clicking halfway along an axon measures the half beyond it — the original's
+behaviour, preserved.
+
+### The reviewer
+
+A browser UI at `http://127.0.0.1:8765`. Analysis runs on a worker thread and streams
 progress, so the page tells you what it is doing instead of freezing; the next image is
-analysed in the background while you review the current one.
+loaded in the background while you work on the current one.
 
 | key | action |
 |---|---|
@@ -62,7 +79,7 @@ analysed in the background while you review the current one.
 | `G` | **export all** — every image analysed so far, plus combined XLSX + CSV |
 | `→` `←` | next / previous image |
 | `U` / `⌘Z` | undo |
-| `R` | reset to the automatic detections |
+| `R` | reset the image — back to the automatic detections, or empty if there were none |
 | `E` | show / hide excluded traces |
 | `+` `-` `0` | zoom in / out / fit |
 | `?` | keyboard help |

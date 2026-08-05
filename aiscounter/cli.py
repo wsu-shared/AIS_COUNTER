@@ -1,11 +1,22 @@
 """Command line interface.
 
-    python -m aiscounter <path>                  analyse a file or a folder, write reports
-    python -m aiscounter <path> --review         analyse, then open the add/delete reviewer
-    python -m aiscounter <path> --combined out.xlsx   one workbook for a whole folder
+    python -m aiscounter <path>            open the reviewer; click to measure each AIS
+    python -m aiscounter <path> --auto     pre-find every AIS, then review them
+    python -m aiscounter <path> --batch    no UI: find every AIS and write the reports
+    python -m aiscounter <path> --batch --combined out.xlsx   one workbook for a whole folder
 
 *path* may be a raw TIFF, an ImageJ "Processed method 2.5" TIFF, a CZI, or a directory to
 walk. The raw/processed pair is resolved automatically.
+
+Two defaults are deliberate, and both make the tool behave like ``original/ais_auto.m`` until
+you ask for more:
+
+* **The browser reviewer opens by default.** Every run is looked at by a human before
+  anything is reported, which is what these measurements are for. ``--batch`` writes reports
+  without a UI.
+* **Nothing is measured until you click.** ``--auto`` turns on the pass that pre-finds every
+  AIS in the image; without it the reviewer starts empty and each record in the report is one
+  you chose. ``--batch`` implies ``--auto``, since a batch run has nobody to do the clicking.
 """
 
 from __future__ import annotations
@@ -23,18 +34,29 @@ from .report import write_report, write_xlsx
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="aiscounter",
-        description="Automatically find every AIS in an image and measure its length. "
-        "A port of original/ais_auto.m, validated against MATLAB.",
+        description="Measure AIS lengths in a browser: click each one, as the original does, "
+        "or pass --auto to find them all first. A port of original/ais_auto.m, "
+        "validated against MATLAB.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("path", help="image file or directory to analyse")
     p.add_argument("-o", "--outdir", default=None,
                    help="where to write reports (default: next to each image)")
-    p.add_argument("--review", "--web", dest="review", action="store_true",
+    p.add_argument("--auto", action="store_true",
+                   help="pre-find every AIS automatically; without it you click each one, as "
+                        "the original does (implied by --batch)")
+    # --review is the default, kept as an explicit flag so existing commands and scripts still
+    # run. --batch is the way out of the UI, and reads as what it does.
+    p.add_argument("--review", "--web", dest="review", action="store_true", default=True,
                    help="open the browser UI to review, add and delete before saving")
+    # SUPPRESS only stops the formatter printing "(default: True)" against the flag that turns
+    # the UI off; --review, added first, is what actually sets the default.
+    p.add_argument("--batch", "--no-review", dest="review", action="store_false",
+                   default=argparse.SUPPRESS,
+                   help="no UI: analyse and write reports straight out")
     p.add_argument("--port", type=int, default=8765, help="port for the review UI")
     p.add_argument("--no-browser", action="store_true",
-                   help="with --review, do not open a browser automatically")
+                   help="serve the review UI but do not open a browser for it")
     p.add_argument("--combined", default=None, metavar="XLSX",
                    help="also write one workbook covering every image analysed")
     p.add_argument("--no-png", action="store_true", help="skip the annotated PNG")
@@ -73,6 +95,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def config_from_args(args) -> AnalysisConfig:
     return AnalysisConfig(
+        # A batch run has nobody to click, so it detects whether or not --auto was given;
+        # refusing to run would only make the user type a flag they have no alternative to.
+        auto_detect=bool(args.auto) or not args.review,
         threshold=args.threshold,
         pixconv=args.pixconv,
         f_fraction=args.f_fraction,
@@ -114,6 +139,10 @@ def main(argv=None) -> int:
     if not images:
         print(f"error: no .tif/.tiff/.czi images found under {root}", file=sys.stderr)
         return 2
+
+    if not args.auto:
+        print("--batch has no one to click, so every AIS is found automatically "
+              "(as with --auto)")
 
     outdir = Path(args.outdir) if args.outdir else None
     results = []

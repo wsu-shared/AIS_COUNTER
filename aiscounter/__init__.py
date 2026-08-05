@@ -1,7 +1,8 @@
-"""aiscounter -- automatic AIS detection and length measurement.
+"""aiscounter -- AIS detection and length measurement.
 
-A faithful Python port of ``original/ais_auto.m`` that finds every AIS in an image instead
-of one per click, with manual add/delete review and PNG + XLSX reporting.
+A faithful Python port of ``original/ais_auto.m``, with a browser reviewer for add / delete /
+join / splice and PNG + XLSX reporting. Measuring is click-driven like the original unless
+``AnalysisConfig.auto_detect`` is on, in which case every AIS in the image is found first.
 
 The numerics are validated against MATLAB R2024b; see ``tests/test_against_matlab.py``.
 """
