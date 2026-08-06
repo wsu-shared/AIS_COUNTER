@@ -24,6 +24,16 @@ QUIRK 5 -- the ``ais_end`` fallback returns a coordinate, not an index.
     ``ais_end = x_pix(end)``, an x *coordinate*. That produces a meaningless length.
     Reproduced, but flagged via ``AISMeasurement.warnings`` so bad rows are visible
     instead of silently polluting the report.
+
+QUIRK 6 -- the sliding mean reads past the end of a short profile, and the original crashes.
+    ``lv_ss(i) = mean([lv_smooth(1:i) lv_smooth(i:i+d)])`` runs for ``i <= d`` and indexes
+    up to ``i+d``, so it needs at least ``2d`` samples. Below that MATLAB raises *Index
+    exceeds the number of array elements* and the original produces no measurement at all
+    -- verified against R2024b, which fails on any trace of 19 points or fewer at the
+    default ``pixconv``. There is nothing faithful to reproduce, so the window is clamped
+    to keep a number on screen and the row is flagged ``invalid``: the length is an
+    extrapolation with no counterpart in the original, not a measurement. See
+    ``min_profile_points`` and ``docs/DIFFERENCES.md`` 3.7.
 """
 
 from __future__ import annotations
@@ -73,11 +83,21 @@ class AISMeasurement:
     """
     warnings: list = field(default_factory=list)
     invalid: bool = False
-    """True when the original's own arithmetic produced a meaningless length (QUIRK 5).
+    """True when the original produced no usable length here (QUIRK 5 or QUIRK 6).
 
-    Not a matter of taste: an index that exceeds the number of profile points cannot be a
-    position along the axon. In the original a human spots this on the figure and presses
-    'n'; unattended, it has to be caught here.
+    Not a matter of taste. Either an index that exceeds the number of profile points was used
+    as a position along the axon, or the profile is too short for the original to index at all
+    and MATLAB stops with an error. In the original a human spots the first on the figure and
+    presses 'n', and simply never gets a number for the second; unattended, both have to be
+    caught here.
+    """
+
+    invalid_reason: str = ""
+    """The warning that set ``invalid``, for the report's rejection column.
+
+    Separate from ``warnings[0]`` because the warnings are in the order they were noticed and
+    the first is often the harmless border-clamp note, which would otherwise be given as the
+    reason a row was thrown away.
     """
 
 
@@ -196,15 +216,40 @@ def intensity_profile(raw: np.ndarray, x_pix: np.ndarray, y_pix: np.ndarray):
     return lv_c, lv_smooth
 
 
+def sliding_window_half_width(pixconv: float = PIXCONV) -> int:
+    """The original's ``d`` (ais_auto.m lines 400-401): ``round(1.5/pixconv) + 1``.
+
+    10 at the default ``pixconv``, aiming at a window about 3 um wide.
+    """
+    return int(matlab_round(1.5 / pixconv)) + 1
+
+
+def min_profile_points(pixconv: float = PIXCONV) -> int:
+    """Shortest profile the original can actually measure: ``2d``, i.e. 20 by default.
+
+    The first branch of the sliding mean runs for ``i <= d`` and reads ``lv_smooth(i:i+d)``,
+    so the largest index it touches is ``min(d, N) + d``. That is within bounds only when
+    ``N >= 2d``; below it MATLAB raises *Index exceeds the number of array elements* and the
+    script stops, having produced no length. Confirmed against R2024b, which fails at N=19
+    and succeeds at N=21 on the same image.
+
+    Derived from ``pixconv`` rather than hardcoded to 20, because ``d`` is: a CZI whose
+    metadata gives a different pixel size moves this floor with it.
+    """
+    return 2 * sliding_window_half_width(pixconv)
+
+
 def sliding_mean(values: np.ndarray, pixconv: float = PIXCONV) -> np.ndarray:
     """The original's sliding mean (ais_auto.m lines 399-413), centre double-counted.
 
-    ``width = 1.5/pixconv`` gives ``d = round(width)+1 = 10`` for the default pixconv.
+    Windows are clamped at both ends. That matches the original for every profile it can
+    measure, and stands in for it below ``min_profile_points``, where MATLAB indexes out of
+    bounds instead -- see QUIRK 6; ``measure_from_trace`` flags those rows rather than
+    passing the clamped numbers off as measurements.
     """
     v = np.asarray(values, dtype=np.float64)
     n = v.size
-    width = 1.5 / pixconv
-    d = int(matlab_round(width)) + 1
+    d = sliding_window_half_width(pixconv)
 
     out = np.empty(n, dtype=np.float64)
     for i in range(n):  # 0-based here; the comparisons below mirror MATLAB's 1-based tests
@@ -243,6 +288,7 @@ def measure_from_trace(
     """Turn one ordered skeleton walk into AIS measurements, following the original."""
     warnings: list = []
     invalid = False
+    invalid_reason = ""
 
     xysm, xys, arclength_um = fit_spline(rows, cols, smooth=smooth)
     x_pix, y_pix = unique_pixels(xys)
@@ -251,11 +297,26 @@ def measure_from_trace(
     if x_pix.min() < 1 or y_pix.min() < 1 or x_pix.max() >= w - 1 or y_pix.max() >= h - 1:
         warnings.append("trace touches the image border; 3x3 sampling was clamped")
 
+    n = x_pix.size
+    floor_n = min_profile_points(pixconv)
+    if n < floor_n:
+        # QUIRK 6: below this the original does not measure the trace badly, it stops. Nothing
+        # downstream is trustworthy, so the row is invalidated here rather than after the
+        # length has been computed -- a short profile also tends to put the peak on its last
+        # sample, which then trips the QUIRK 5 fallback and turns a 2 um speck into a length
+        # in the tens of microns. That is what "89 um dot" looks like from the inside.
+        invalid = True
+        invalid_reason = (
+            f"{n} profile points, fewer than the {floor_n} the original's sliding mean "
+            f"indexes: MATLAB raises \"Index exceeds the number of array elements\" here, so "
+            f"this trace has no length in the original at all"
+        )
+        warnings.append(invalid_reason)
+
     _, lv_smooth = intensity_profile(raw, x_pix, y_pix)
     lv_ss = sliding_mean(lv_smooth, pixconv=pixconv)
     norm_lv = normalise(lv_ss)
 
-    n = x_pix.size
     pix_narray = np.arange(1, n + 1)  # 1-based index array, as MATLAB
     axon_um = pix_narray * pixconv  # QUIRK 4: index-based, not arc length
 
@@ -267,16 +328,27 @@ def measure_from_trace(
         ais_end = int(after[-1]) + 1  # find(..., 1, 'last')
     else:
         # QUIRK 5: the original substitutes an x coordinate for an index here.
-        ais_end = int(x_pix[-1])
+        #
+        # ``+ 1`` because MATLAB's x_pix is 1-based and ours was rebased to 0-based in
+        # fit_spline. Everywhere else that rebasing is what we want -- x_pix indexes a
+        # NumPy image. Here the value is not used as a coordinate at all but dropped
+        # straight into an index, so it has to be the number MATLAB would have dropped in.
+        # Without this the reported length is short by exactly one pixconv, which is small
+        # enough to look like rounding and is the only place the port drifted from MATLAB.
+        ais_end = int(x_pix[-1]) + 1
         invalid = True
         # The x coordinate is meaningless as an index whatever its size -- usually it is far
         # past the end of the profile, but it can also land inside it (or before ais_start,
         # giving a negative length). The wording must hold in every one of those cases.
-        warnings.append(
+        message = (
             f"profile never exceeds f after its peak; the original falls back to an x "
             f"coordinate ({ais_end}) in place of an index into the {n} profile points, "
             f"which makes this length meaningless"
         )
+        warnings.append(message)
+        # Only when nothing has invalidated the row yet: a profile too short to measure at all
+        # is the root cause of this fallback when both fire, and is the more useful reason.
+        invalid_reason = invalid_reason or message
 
     before = np.flatnonzero((pix_narray < max_i) & (norm_lv < f))
     if before.size > 0:
@@ -294,6 +366,7 @@ def measure_from_trace(
     if lngth <= 0:
         warnings.append("non-positive length")
         invalid = True
+        invalid_reason = invalid_reason or "non-positive length"
 
     return AISMeasurement(
         index=index,
@@ -318,4 +391,5 @@ def measure_from_trace(
         trace_cols=np.asarray(cols, dtype=np.int64),
         warnings=warnings,
         invalid=invalid,
+        invalid_reason=invalid_reason,
     )

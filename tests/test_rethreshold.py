@@ -333,30 +333,82 @@ def test_a_rescaled_trace_can_span_two_components(bridged_pair):
     assert spanning[0].labels == {1, 2}
 
 
-def test_overlapping_traces_are_flagged_on_both_sides(bridged_pair):
-    """Flagged, not dropped: which of the two is the real AIS is a judgement about the
-    picture. Both are flagged, since neither is more suspect than the other."""
+def test_the_flooded_ais_is_rejected_and_says_why(bridged_pair):
+    """The dim axon pulls the threshold down until it reaches the bright one, and its trace
+    then measures the bright one. That row must not be reported as an AIS."""
     result = analyse_image(bridged_pair[0], config=_config("original"))
-    live = [r for r in result.records if not r.excluded]
-    clashing = [
-        r for r in live if any(o is not r and r.labels & o.labels for o in live)
-    ]
-    assert len(clashing) >= 2
-    for record in clashing:
-        assert any("same axon" in w for w in record.measurement.warnings)
+    dim = next(r for r in result.records if r.label == 2)
+    assert dim.merged_labels == {1}
+    assert dim.excluded
+    assert "merged component 2 into component 1" in dim.reason
 
 
-def test_the_overlap_warning_can_be_made_to_exclude(bridged_pair):
-    """``--drop-warned`` has to see a warning added after the acceptance test ran."""
-    result = analyse_image(bridged_pair[0], config=_config("original", drop_warned=True))
-    assert any("same axon" in (r.reason or "") for r in result.records if r.excluded)
+def test_the_axon_that_was_flooded_into_survives(bridged_pair):
+    """The asymmetry, which is the whole point: a merge involves two components and only one
+    of them is measuring the wrong thing. Rejecting on bare overlap loses the good one too."""
+    result = analyse_image(bridged_pair[0], config=_config("original"))
+    bright = next(r for r in result.records if r.label == 1)
+    assert bright.merged_labels == set()
+    assert not bright.excluded
 
 
-def test_fixed_mode_never_flags_an_overlap(bridged_pair):
+def test_the_rejection_can_be_turned_off(bridged_pair):
+    result = analyse_image(
+        bridged_pair[0], config=_config("original", drop_rethreshold_merges=False)
+    )
+    dim = next(r for r in result.records if r.label == 2)
+    assert dim.merged_labels == {1}      # still recorded, so the report still says so
+    assert not dim.excluded
+    # and the pair warning takes over, since both traces are now live on one component
+    assert any("same axon" in w for w in dim.measurement.warnings)
+
+
+def test_a_rejected_merge_is_still_written_to_the_report(bridged_pair):
+    from aiscounter.report import _rows_for
+
+    result = analyse_image(bridged_pair[0], config=_config("original"))
+    rows = {row["component_label"]: row for row in _rows_for(result)}
+    merged = rows["1+2"]
+    assert merged["included"] is False
+    assert "merged component 2 into component 1" in merged["note"]
+
+
+def test_fixed_mode_never_rejects_a_merge(bridged_pair):
     result = analyse_image(bridged_pair[0], config=_config("fixed"))
+    assert all(not r.merged_labels for r in result.records)
     assert not any(
         "same axon" in w for r in result.records for w in r.measurement.warnings
     )
+
+
+def test_a_click_is_never_overruled_by_the_merge_filter(bridged_pair):
+    """An explicit click is the human doing exactly the looking this filter stands in for."""
+    result = analyse_image(bridged_pair[0], config=_config("original", auto_detect=False))
+    outcome = result.add_at(*_click_point(result.segmentation, 2))
+    assert outcome.record.merged_labels == {1}   # recorded
+    assert not outcome.record.excluded           # but not acted on
+    result.apply_filters()                       # and a later filter pass must not either
+    assert not result.by_uid(outcome.record.uid).excluded
+
+
+# --- the dominance test on its own ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "counts, base, expected",
+    [
+        ({1: 10, 2: 150}, 1, {2}),        # a speck whose walk is almost entirely its neighbour
+        ({1: 175, 2: 10}, 1, set()),      # an axon that picked up a ten-pixel stub
+        ({1: 50}, 1, set()),              # never left home
+        ({2: 50}, 1, {2}),                # left home entirely
+        ({1: 50, 2: 50}, 1, set()),       # a tie is not domination
+        ({1: 10, 2: 40, 3: 60}, 1, {2, 3}),
+    ],
+)
+def test_only_a_component_holding_more_of_the_walk_counts_as_a_merge(counts, base, expected):
+    from aiscounter.pipeline import _dominating_components
+
+    assert _dominating_components(counts, base) == expected
 
 
 # --- the reviewer ----------------------------------------------------------------------

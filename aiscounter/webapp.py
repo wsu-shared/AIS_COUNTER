@@ -92,7 +92,7 @@ def _checkpoint(result) -> list:
     """
     return [
         (r, r.measurement, r.excluded, r.reason, r.source, r.label, set(r.labels),
-         r.user_locked, r.threshold)
+         r.user_locked, r.threshold, set(r.merged_labels))
         for r in result.records
     ]
 
@@ -104,9 +104,8 @@ def _restore(result, checkpoint: list) -> None:
     removed since come back because it still holds them.
     """
     result.records = [row[0] for row in checkpoint]
-    for record, measurement, excluded, reason, source, label, labels, locked, threshold in (
-        checkpoint
-    ):
+    for (record, measurement, excluded, reason, source, label, labels, locked, threshold,
+         merged) in checkpoint:
         record.measurement = measurement
         record.excluded = excluded
         record.reason = reason
@@ -115,6 +114,7 @@ def _restore(result, checkpoint: list) -> None:
         record.labels = labels
         record.user_locked = locked
         record.threshold = threshold
+        record.merged_labels = merged
     result.renumber()
 
 
@@ -312,6 +312,10 @@ class Session:
             # each AIS is measured at its own level and the image no longer has just one.
             "threshold": round(float(record.threshold), 6) if record.threshold else None,
             "invalid": m.invalid,
+            # The warning that actually disqualified the row, which is not always the first
+            # one: a trace can touch the border (harmless, clamped) and only then turn out to
+            # be unmeasurable, and the sidebar flag should explain the second, not the first.
+            "invalidReason": m.invalid_reason,
             "warnings": m.warnings,
             "points": points,
             "start": [float(m.x_pix[si]), float(m.y_pix[si])],
@@ -433,6 +437,10 @@ class Session:
                 self._rollback(index)
                 return f"#{outcome.record.index} already added"
             self._commit(index)
+            if outcome.unmeasurable:
+                # The record exists but is excluded, so it has no display number and its
+                # length is not a length. Naming either would be worse than saying neither.
+                return f"not counted — {outcome.record.reason}"
             verb = {"added": "added", "revived": "restored", "retraced": "re-traced"}[
                 outcome.action
             ]

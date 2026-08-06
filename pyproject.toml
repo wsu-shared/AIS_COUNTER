@@ -1,0 +1,30 @@
+[project]
+name = "aiscounter"
+description = "AIS detection and length measurement: a MATLAB-validated port of original/ais_auto.m"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "AIS Counter" }]
+
+# Version, dependencies and the dev extra are all read from files that already hold them, so
+# each has exactly one place to change. See [tool.setuptools.dynamic] below.
+dynamic = ["version", "dependencies", "optional-dependencies"]
+
+[project.scripts]
+aiscounter = "aiscounter.cli:main"
+
+[tool.setuptools]
+packages = ["aiscounter"]
+
+[tool.setuptools.package-data]
+# The browser reviewer is served straight off disk from aiscounter/static, so an installed
+# copy without these files would start and then 404 on its own page.
+aiscounter = ["static/*", "requirements.txt"]
+
+[tool.setuptools.dynamic]
+version = { attr = "aiscounter.__version__" }
+dependencies = { file = ["aiscounter/requirements.txt"] }
+optional-dependencies.dev = { file = ["requirements-dev.txt"] }
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"

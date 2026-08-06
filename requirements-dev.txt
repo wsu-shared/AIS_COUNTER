@@ -1,0 +1,10 @@
+# Test-only. The runtime list is aiscounter/requirements.txt.
+#
+#   pip install -r aiscounter/requirements.txt -r requirements-dev.txt
+#
+# or equivalently, from a checkout:  pip install -e ".[dev]"
+#
+# run.sh installs the runtime list only -- someone double-clicking it wants the tool, not
+# the test suite.
+
+pytest>=7.0

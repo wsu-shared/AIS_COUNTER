@@ -346,8 +346,15 @@ function renderSidebar() {
 
   const warns = [];
   if (d.image.derived) warns.push("Processed channel derived, not ImageJ 'method 2.5' — not comparable to the original.");
-  const invalid = d.records.filter((r) => r.invalid).length;
-  if (invalid) warns.push(`${invalid} trace(s) excluded: the original's ais_end falls back to an x coordinate, making those lengths meaningless.`);
+  // Counted separately, because the banner used to call every invalid trace "excluded" while
+  // one of them was sitting in the mean. Invalid means the original produced no length here
+  // at all -- either ais_end fell back to an x coordinate, or the profile is too short for
+  // its sliding mean to index and MATLAB stops with an error.
+  const invalid = d.records.filter((r) => r.invalid);
+  const dropped = invalid.filter((r) => r.excluded).length;
+  const kept = invalid.length - dropped;
+  if (dropped) warns.push(`${dropped} trace(s) excluded: the original's own arithmetic gives them no length.`);
+  if (kept) warns.push(`${kept} trace(s) counted despite having no valid length (--keep-invalid). Hover the ! for each one.`);
   $('#warnbox').innerHTML = warns.map((w) => `<div class="warn">${escapeHtml(w)}</div>`).join('');
 
   const list = $('#list');
@@ -361,7 +368,7 @@ function renderSidebar() {
       + (state.hot === r.uid ? 'hot' : '');
     li.innerHTML = `<span class="num">${r.excluded ? '–' : r.index}</span>`
       + `<span class="len">${r.length} µm</span>`
-      + (r.warnings.length ? `<span class="flag" title="${escapeHtml(r.warnings[0])}">!</span>` : '')
+      + (r.warnings.length ? `<span class="flag" title="${escapeHtml(r.invalidReason || r.warnings[0])}">!</span>` : '')
       + `<button class="del" title="Delete">✕</button>`;
     // Under rethreshold="original" each trace has its own level, and which one is a fair
     // question to ask of a specific row rather than of the image.

@@ -37,17 +37,34 @@ REFERENCE_DIR = Path(__file__).parent / "reference"
 
 # Two independent images, deliberately: the second was never used while developing the port,
 # and its Otsu threshold differs (0.094 vs 0.137), so agreement there is not overfitting.
-BASE = PROJECT / "example-images" / "MATLAB BB50 (TM,MDL,DMSO)" / "9691-19516-3730_b0c0x0-1388y0-1040_ORG"
-BASE2 = PROJECT / "example-images" / "TM" / "11476-16619-18308_b0c0x0-1388y0-1040_ORG"
+#
+# The folders these live in have been renamed once already, and because the whole module
+# skips when the path misses, the rename turned 26 MATLAB-backed assertions off without
+# failing anything. Hence `_base`: it searches for the image by name, so the next reorganise
+# costs nothing, and `test_the_matlab_fixtures_are_actually_being_compared` below fails loudly
+# if the search ever comes up empty.
+def _base(stem: str) -> Path:
+    root = PROJECT / "example-images"
+    hit = next(root.rglob(f"{stem}.tif"), None) if root.exists() else None
+    return hit.with_suffix("") if hit else root / stem
+
+
+BASE = _base("9691-19516-3730_b0c0x0-1388y0-1040_ORG")
+BASE2 = _base("11476-16619-18308_b0c0x0-1388y0-1040_ORG")
 
 # 0-based (col, row) clicks matching ref_1..ref_6.json
 CLICKS = [(1117, 354), (542, 1036), (718, 132), (23, 266), (1133, 1014), (948, 361)]
 # 0-based (col, row) clicks matching img2_1..img2_5.json
 CLICKS2 = [(162, 520), (669, 370), (503, 194), (1216, 497), (266, 116)]
 
+# Skips only when there are no example images at all, which is a legitimate state for a fresh
+# clone. If the folder is populated but these two are not in it, the fixtures below raise and
+# the suite says so -- deliberately, because the alternative is what happened before: the
+# images moved, the whole module skipped, and nothing failed for as long as it took someone to
+# read the skip list.
 pytestmark = pytest.mark.skipif(
-    not (BASE.parent.exists() and Path(str(BASE) + ".tif").exists()),
-    reason="example images not available",
+    not any((PROJECT / "example-images").rglob("*.tif")),
+    reason="no example images in example-images/",
 )
 
 

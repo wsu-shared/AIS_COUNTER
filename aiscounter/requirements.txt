@@ -1,11 +1,31 @@
-# Pinned to the versions the MATLAB comparison was validated against.
+# Runtime dependencies, floored at the versions the MATLAB comparison was validated against.
+#
+# One requirement per line, and no trailing comment on a requirement line: pyproject.toml
+# reads this file directly (tool.setuptools.dynamic) and hands every non-comment line to the
+# PEP 508 parser unchanged, which rejects anything after the specifier.
+#
+# Test-only dependencies are in requirements-dev.txt, so that installing the tool does not
+# drag pytest in behind it.
+
 numpy>=1.26
 scipy>=1.11
-scikit-image>=0.22     # bwmorph 'thin' equivalent
+
+# bwmorph 'thin' equivalent
+scikit-image>=0.22
+
 tifffile>=2024.1.1
-matplotlib>=3.8        # annotated PNG + the interactive reviewer
-openpyxl>=3.1          # XLSX report
-csaps>=1.3             # MATLAB-compatible smoothing spline (the original's csaps p=0.3)
-czifile>=2019.7.2      # optional: .czi input
-natsort>=8.0           # optional: natural ordering when walking folders
-pytest>=7.0            # tests only
+
+# annotated PNG + the interactive reviewer
+matplotlib>=3.8
+
+# XLSX report
+openpyxl>=3.1
+
+# MATLAB-compatible smoothing spline (the original's csaps p=0.3)
+csaps>=1.3
+
+# optional: .czi input
+czifile>=2019.7.2
+
+# optional: natural ordering when walking folders
+natsort>=8.0

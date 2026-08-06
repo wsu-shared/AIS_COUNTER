@@ -22,11 +22,43 @@ optimistically, so they feel instant regardless.
 
 ## Install
 
+On a Mac there is nothing to do: **double-click `run.sh`**. It reads `.python-version`, has
+pyenv build that Python if it is missing, creates `.venv`, then asks you for a folder of images
+and opens the reviewer on it. Setup is skipped once `.venv` is good, so later runs start in
+about a second. See [Running it](#running-it).
+
+By hand, on anything:
+
 ```bash
-# any CPython >= 3.10; on this machine that is the pyenv build
-/Users/ac/.pyenv/versions/3.10.20/bin/python -m venv .venv
+python3 -m venv .venv                                   # any CPython >= 3.10
 .venv/bin/pip install -r aiscounter/requirements.txt
 ```
+
+or as a package, which also puts an `aiscounter` command on your PATH:
+
+```bash
+pip install -e .            # add ".[dev]" for pytest
+```
+
+## Running it
+
+```bash
+./run.sh                                  # pick a folder from a dialog
+./run.sh "example-images/TM"              # skip the dialog
+./run.sh "example-images/TM" --auto       # anything after the folder goes to the CLI
+```
+
+`run.sh` rebuilds `.venv` by itself when `.python-version` changes, when
+`aiscounter/requirements.txt` changes, or when the interpreter it was built against
+disappears — it records all three in `.venv/.aiscounter-setup` and compares on every run.
+Delete `.venv` to force a rebuild. It will not install pyenv for you: that is a decision about
+the whole machine, so it prints `brew install pyenv` and stops.
+
+Because the last thing it does is activate `.venv`, the same script is a fine place to add any
+other command you want run against the project's interpreter.
+
+If double-clicking opens a text editor instead of running, right-click `run.sh` → **Open With**
+→ **Terminal**, or run `chmod +x run.sh` once in a terminal.
 
 ## Use
 
@@ -146,6 +178,14 @@ hand-run session. The *library* default is still `fixed` — `AnalysisConfig().r
 so anything importing `aiscounter` keeps the reproducible behaviour unless it asks otherwise.
 Both defaults are pinned by a test, so neither can drift by accident.
 
+**Re-clicking the same AIS gives the same threshold and a different length.** That is correct,
+and it catches everyone out. The rescale is `max_ais/max_all`, where `max_ais` is the brightest
+pixel *anywhere in the component you clicked* — so it does not depend on where inside the AIS
+you clicked, and every click on that AIS lands on the same threshold. The click still moves the
+seed the walk starts from, so the length does change. Measured in MATLAB across 31 components
+with two clicks each: 31/31 same threshold, 26/31 different length. The loop is re-run on every
+click regardless.
+
 **Where to see the per-AIS threshold.** The number beside the dropdown is the image's Otsu
 level and never moves — in **original** mode it is labelled `base`, because it is only the
 starting point the rescale multiplies. The levels each AIS was actually measured at appear:
@@ -164,11 +204,22 @@ Two things to know about the mode:
   session is hours of work. The panel says when what you are looking at predates the switch;
   press `R` to bring that image up to date. Clicks use the new mode immediately, because a
   click runs the loop itself and is the one place this reproduces the original exactly.
-* **In `--auto` it can report an axon twice.** A threshold scaled down by a dim AIS's own peak
-  can grow that AIS across a neighbour. Any two traces that end up sharing a component are
-  flagged — `!` in the sidebar, the reason in the `note` column — and `--drop-warned` excludes
-  them outright. This is inherent to running the loop unattended; the original never meets it
-  because it measures one AIS per run.
+* **`--auto` needs the merge filter.** The rescale is `max_ais/max_all`, so the *dimmer* an
+  AIS the *lower* the threshold it imposes on the whole image — meaning a speck of debris gets
+  the most aggressive cut of anything in the frame, floods outward and merges with the real
+  axon beside it. On the example image four fragments of 1.3–3.5 µm debris, all rejected at
+  the fixed threshold, came back as AIS of 12.7, 19.5, 19.8 and 37.0 µm. Running the original
+  by hand you see this on the figure and press `n`; unattended, nothing does.
+
+  So an AIS is rejected when another component holds more of its walk than its own does
+  (`--keep-rethreshold-merges` to disable). Rejected rows are still written to the report with
+  the reason, and clicking one in the reviewer overrules it — a click is a human doing exactly
+  the looking the filter stands in for.
+
+Original mode is **verified against MATLAB R2024b click for click**: 62 clicks across every
+component of a real image, asserting the rescaled threshold, the traced pixels, the profile,
+`ais_start`/`ais_end` and the length all agree exactly. See
+`tests/test_rethreshold_against_matlab.py`.
 
 ### Filtering and display
 
@@ -253,7 +304,9 @@ work. `arclength_um` is the true spline arc length, which the original computes 
 .venv/bin/python -m pytest tests/ -q
 ```
 
-The MATLAB comparison tests run from vendored fixtures and need no MATLAB. To regenerate them
+The MATLAB comparison tests run from vendored fixtures and need no MATLAB. There are two sets:
+`matlab_reference.m` covers the fixed-threshold path, and `matlab_rethreshold_reference.m`
+covers the original's rethreshold loop over 62 clicks. To regenerate them
 after a deliberate change to the numerics:
 
 ```bash

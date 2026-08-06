@@ -11,6 +11,12 @@ and listed**. Nothing is left to chance.
 implementations and asserts they agree. The fixtures in `tests/reference/` come from `tests/matlab_reference.m`, which is the
 original script running headless with a scripted click instead of `ginput`.
 
+These tests locate their images by name rather than by path. They previously hardcoded one,
+and when the `example-images/` folders were renamed the whole module started skipping — 26
+MATLAB-backed assertions turned off without a single test failing. The module now skips only
+when `example-images/` holds no TIFF at all; if it is populated but these images are missing,
+the suite fails and says so.
+
 Verified equal on MATLAB R2024b, for all eleven:
 
 | Quantity | Result |
@@ -64,6 +70,7 @@ them would silently change every published number, so they stay, marked QUIRK in
 | 3 | `measure.py` | The sliding mean concatenates `[i-d:i]` and `[i:i+d]`, both of which include `i`. The centre sample is **counted twice** and the window is 2d+2 wide, not 2d+1. |
 | 4 | `measure.py` | `axon_um = (1:N)*pixconv` treats every step as one pixel, so a diagonal step counts as 1.0 rather than 1.414. Length is **index-based, not arc length**. The script computes a true arc length (`ax_um`) and never uses it. |
 | 5 | `measure.py` | When the profile never exceeds `f` after its peak, `ais_end` falls back to `x_pix(end)` — an x **coordinate** used as an **index**. See below. |
+| 6 | `measure.py` | The sliding mean reads `lv_smooth(i:i+d)` for `i <= d`, so it needs `2d` samples. On a shorter profile MATLAB raises *Index exceeds the number of array elements* and stops. This is the one quirk that **cannot** be preserved — there is no output to reproduce. See 3.7. |
 
 Quirk 4 means reported lengths are systematically shorter than true arc length. That is what
 the original reports and what published numbers are based on, so it is the default. The true
@@ -119,6 +126,39 @@ importing the library gets the reproducible behaviour unless it asks otherwise; 
 is **`original`**, so a run off this command line matches a hand-run MATLAB session. Both are
 pinned by tests so that neither drifts silently.
 
+**The threshold belongs to the AIS; the length belongs to the click.** This surprises everyone,
+so it is worth stating outright. The rescale is
+
+```matlab
+max_ais = max(max(ais_select .* D));    % ais_select is the whole connected component
+threshold = (max_ais/max_all)*threshold;
+```
+
+`max_ais` is the brightest pixel **anywhere in the selected component**. It does not depend on
+where inside that component you clicked. So re-clicking near the same AIS re-runs the loop and
+arrives at *the same threshold every time* — while the click still moves the `bwdist` seed, so
+the walk starts somewhere else and the reported length does change. Same threshold, different
+length, is correct.
+
+Measured in MATLAB R2024b, eight clicks spread along one axon:
+
+| click | threshold | length |
+|---|---|---|
+| 1 | 0.0934144410 | 17.066 |
+| 2 | 0.0934144410 | 15.778 |
+| 3 | 0.0934144410 | 16.100 |
+| 4 | 0.0934144410 | 21.574 |
+| … | … | … |
+| 8 | 0.0934144410 | 19.481 |
+
+Across all 31 components of that image with two clicks each: **31/31 gave the same threshold
+for both clicks, 26/31 gave a different length**. Different *AIS* do get different thresholds —
+they range from 0.0379 to 0.1451 on this image — which is the whole point of the mode.
+
+The loop is re-run on every click, not memoised: a rescaled segmentation may be reused when the
+level comes out identical, but that is cached arithmetic, not a cached decision.
+`test_every_click_re_runs_the_loop_rather_than_reusing_the_last_one` pins the difference.
+
 Notes on `original`:
 
 * **The rescale ratio and the threshold are on different scales.** `max_ais/max_all` is taken
@@ -131,11 +171,36 @@ Notes on `original`:
 * **Clicking reproduces the original exactly.** The click selects the component whose peak
   sets the new threshold, the image is segmented again, and the same click takes whatever it
   now lands on — which is what the original's second `ginput` does.
-* **`--auto` is a best-effort mapping, not a reproduction.** With no click, the loop is run
-  once per component of the first segmentation, seeded from that component's own trace start
-  (the original's human clicks near the same place both times). A dim AIS's lower threshold
-  can grow it across a neighbour, so the same axon can be reported twice; any two traces
-  sharing a component are flagged in the `note` column and `--drop-warned` excludes them.
+* **Verified against MATLAB R2024b, click for click.** `tests/test_rethreshold_against_matlab.py`
+  replays 62 clicks — one at every component's centre and one *just outside* each endpoint,
+  which is what the original tells you to do — through both implementations, and asserts the
+  rescaled threshold, the traced pixels, the profile, `ais_start`/`ais_end` and the length all
+  agree exactly. 61 of the 62 re-threshold, which is the "99 times out of 100". The one that
+  does not is the component holding the brightest pixel, and it comes out pixel-identical to
+  fixed mode.
+* **`--auto` is a best-effort mapping, not a reproduction.** With no click, the loop runs once
+  per component of the first segmentation. The seed carries across only to identify *which*
+  component to follow; the trace itself then uses the ordinary automation rule of §3.1
+  (longest walk wins), because the carried-over pixel is usually no longer an endpoint of the
+  enlarged skeleton and seeding there covers one side only.
+
+  This is also where the mode's one real failure lives, and it is worth stating plainly. The
+  rescale is `max_ais/max_all`, so **the dimmer the AIS, the lower the threshold it imposes on
+  the whole image**. A speck of debris therefore gets the most aggressive threshold cut of
+  anything in the frame, floods outward, and merges with whatever real axon is next to it — on
+  the example image four fragments of 1.3–3.5 um debris, every one of them rejected outright
+  at the fixed threshold, came back as AIS of 12.7, 19.5, 19.8 and 37.0 um, two of them
+  double-counting their neighbour. Running the original by hand this cannot happen: you see
+  the re-thresholded figure and press `n`.
+
+  `AnalysisConfig.drop_rethreshold_merges` (on by default, `--keep-rethreshold-merges` to
+  disable) is the automatic stand-in, in the same role `drop_invalid` plays in §3.3. An AIS is
+  rejected when some **other** component holds more of its walk than the component whose peak
+  set the threshold — at which point the trace is measuring that other component, which is
+  what the rejection message says. The test has to be asymmetric: a merge involves two
+  components and only one of them is wrong, so rejecting on bare overlap threw away six
+  perfectly good axons alongside the five bad ones. Rejected rows still reach the report with
+  their reason, and clicking one in the reviewer overrules it.
 * **It costs about 0.15s per AIS**, since the image is segmented again for each one — ~6s
   rather than ~1.8s on the example image. `mat2gray` and the Gaussian are not repeated.
 
@@ -191,6 +256,44 @@ alters a single pixel: `test_crop_thinning_matches_full_frame` asserts the cropp
 identical to the full-frame one for **every** component of both reference images, and
 `test_click_path_through_the_pipeline_matches_matlab` drives the cached, cropped code path the
 UI actually uses and still matches MATLAB exactly.
+
+### 3.7 Traces the original cannot measure at all
+
+Quirk 6 is different in kind from the others: there is no wrong number to reproduce, because
+the original does not reach one. Its sliding mean is
+
+```matlab
+d = round(1.5/pixconv) + 1;                          % 10 at pixconv = 0.161
+if i < (d+1)
+    lv_ss(i) = mean([lv_smooth(1:i) lv_smooth(i:i+d)]);
+```
+
+The first branch runs for `i <= d` and indexes `i+d`, so the largest index it touches is
+`min(d,N)+d`. That is in bounds only when **`N >= 2d`** — 20 points at the default pixel size.
+Below it MATLAB raises *Index exceeds the number of array elements* and the script halts,
+having produced nothing. Confirmed on R2024b: the same image fails at N=19 and succeeds at
+N=21 (`tests/reference/short_profile/clicks.json`).
+
+`aiscounter` clamps the window instead, because a batch run cannot stop on one speck of
+debris. The clamped numbers are **not a measurement**, so the row is flagged `invalid` and
+excluded, carrying that sentence as its reason. The floor is computed from `pixconv`
+(`measure.min_profile_points`), not hardcoded, so a differently calibrated image moves it.
+
+Left unflagged this is not a small error. A 14-point trace — about 2 µm of skeleton, a dot on
+screen — produces a clamped profile whose peak lands on its *last* sample, which then trips
+the quirk 5 fallback, which substitutes an x coordinate for an index: the dot is reported as
+an **89.52 µm AIS**. On the example image 45 of 90 components are below the floor.
+
+Two consequences worth stating plainly:
+
+* **A click does not overrule this.** Manual adds skip the plausibility filters — minimum
+  length, loop shape, rethreshold merges — because those are judgements a human can overrule
+  by looking. `drop_invalid` is not a judgement, and `pipeline.add_at` no longer bypasses it.
+  Clicking such a trace still creates a record, excluded and explained, so the click visibly
+  does something.
+* **Nothing else moves.** Where MATLAB runs, the port still matches it to the last digit,
+  including the lengths the original gets wrong: the 21-point trace in the fixture reports
+  97.888 µm in both. Across ten example images the automatic pass loses no AIS to this change.
 
 ## 4. What test-2 was doing
 

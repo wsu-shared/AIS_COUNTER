@@ -85,6 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="keep lengths the original's ais_end bug makes meaningless")
     a.add_argument("--drop-warned", action="store_true",
                    help="reject any AIS carrying a warning, not just invalid ones")
+    a.add_argument("--keep-rethreshold-merges", action="store_true",
+                   help="with --rethreshold original, keep AIS whose rescaled threshold "
+                        "merged them into a neighbouring component (dim debris flooding "
+                        "into a real axon); rejected by default, as a human would")
     a.add_argument("--max-circularity", type=float, default=1.0, metavar="0..1",
                    help="reject loop-shaped traces (0 = straight, 1 = closed loop); "
                         "1.0 keeps everything")
@@ -114,6 +118,7 @@ def config_from_args(args) -> AnalysisConfig:
         max_length_um=args.max_length,
         drop_invalid=not args.keep_invalid,
         drop_warned=args.drop_warned,
+        drop_rethreshold_merges=not args.keep_rethreshold_merges,
         max_circularity=args.max_circularity,
         skeleton_color=args.skeleton_color,
         skeleton_width=args.skeleton_width,

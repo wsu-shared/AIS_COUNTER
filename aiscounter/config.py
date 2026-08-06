@@ -56,6 +56,10 @@ class AnalysisConfig:
     In ``original`` mode the threshold each AIS was actually measured at is written to the
     report as ``threshold``, because it is no longer a property of the image.
 
+    Reproduces the original exactly when you click each AIS. Unattended (``auto_detect``) it
+    is a best-effort mapping, and needs ``drop_rethreshold_merges`` to stand in for the human
+    who would have looked at the re-thresholded picture.
+
     Costs about 0.15s per AIS -- the image is segmented again for each one. See
     ``docs/DIFFERENCES.md`` section 3.2 for why the original's rescale is not reproducible
     between people, which is the reason it is not the default.
@@ -78,6 +82,25 @@ class AnalysisConfig:
     min_length_um: float = 5.0      # reject implausibly short traces
     max_length_um: float = 120.0    # reject runaway traces (the walk caps at 300 px anyway)
     drop_invalid: bool = True       # reject lengths the original's own bug made meaningless
+
+    drop_rethreshold_merges: bool = True
+    """Reject an AIS whose rescaled threshold merged it into a different component.
+
+    Only bites with ``rethreshold="original"``, where it is the automatic stand-in for the
+    human the loop was written around -- the same role ``drop_invalid`` plays for the
+    ``ais_end`` bug (see ``docs/DIFFERENCES.md`` 3.3).
+
+    The rescale is ``max_ais/max_all``, so a *dim* AIS imposes a *low* threshold on the whole
+    image. On the example image four fragments of 1.3-3.5 um debris -- all of them rejected
+    outright at the fixed threshold -- pulled the threshold down until they touched a real
+    axon, and were then reported as AIS of 12.7, 19.5, 19.8 and 37.0 um. Two of them were the
+    same axon as their neighbour, counted twice. A person running the original sees the
+    re-thresholded figure and presses ``n``; nothing else does.
+
+    Turning it off keeps those rows. They are written to the report with their reason either
+    way, and clicking one in the reviewer overrules the rejection.
+    """
+
     drop_warned: bool = False       # stricter: reject anything flagged at all
     strict: bool = False            # raise instead of skipping a component that fails
 

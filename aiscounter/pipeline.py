@@ -78,6 +78,21 @@ class AISRecord:
     resurrect traces the user had deleted, or bin ones they had explicitly added.
     """
 
+    merged_labels: set = field(default_factory=set)
+    """Other components this AIS's rescaled threshold merged it into. Empty is the good case.
+
+    Only ever non-empty under ``rethreshold="original"``, and it is the mode's one real
+    failure. The rescale is ``max_ais/max_all``, so the *dimmer* the AIS the *lower* the
+    threshold it imposes on the whole image -- and a dim speck of debris pulls the threshold
+    down far enough to flood into a real axon beside it. The trace then measures that axon,
+    and a 2 um fragment is reported as a 30 um AIS.
+
+    Running the original by hand this cannot happen: you see the re-thresholded figure and
+    either click elsewhere or press ``n``. Unattended there is nothing to notice it, so it is
+    recorded here and excluded by ``AnalysisConfig.drop_rethreshold_merges``. Excluded, not
+    deleted -- the row still reaches the report with its reason, and a click overrules it.
+    """
+
     threshold: float = 0.0
     """The threshold this trace was actually segmented at.
 
@@ -203,12 +218,18 @@ def _concatenate_traces(segments: list) -> tuple:
     )
 
 
-def _labels_under(segmentation: Segmentation, rows, cols) -> set:
-    """Which components a walk passes through; background (0) is not a component."""
+def _label_counts_under(segmentation: Segmentation, rows, cols) -> dict:
+    """How many pixels of a walk fall on each component; background (0) is not a component."""
     h, w = segmentation.labels.shape
     r = np.clip(np.asarray(rows), 0, h - 1)
     c = np.clip(np.asarray(cols), 0, w - 1)
-    return {int(v) for v in np.unique(segmentation.labels[r, c]) if v}
+    values, counts = np.unique(segmentation.labels[r, c], return_counts=True)
+    return {int(v): int(n) for v, n in zip(values, counts) if v}
+
+
+def _labels_under(segmentation: Segmentation, rows, cols) -> set:
+    """Which components a walk passes through; background (0) is not a component."""
+    return set(_label_counts_under(segmentation, rows, cols))
 
 
 @dataclass
@@ -218,6 +239,16 @@ class AddOutcome:
     record: AISRecord
     action: str  # "added" | "revived" | "retraced" | "unchanged"
     previous: AISMeasurement | None = None  # the trace replaced by a "retraced" click
+
+    @property
+    def unmeasurable(self) -> bool:
+        """The click landed on something the original cannot produce a length for.
+
+        Distinct from "the filters rejected it": a click overrules the filters, so a record
+        that comes back excluded from ``add_at`` is one the arithmetic itself failed on, and
+        the UI has to say so rather than report a number.
+        """
+        return self.record.excluded
 
 
 @dataclass
@@ -285,8 +316,14 @@ class AnalysisResult:
         it -- which is also the way to overrule a trace that started from the wrong end --
         and clicking an auto-rejected one brings it back (``revived``).
 
-        Manual adds deliberately skip the automatic plausibility filters: an explicit click
-        is a human overriding them.
+        Manual adds deliberately skip the automatic plausibility filters -- minimum length,
+        loop shape, rethreshold merges -- because an explicit click is a human overruling
+        them. They do *not* skip ``drop_invalid``. That flag is not a plausibility judgement
+        but a statement that the original's own arithmetic produced no length here (QUIRK 5
+        and QUIRK 6), and a click cannot overrule arithmetic: clicking a 14-pixel speck used
+        to enter it in the table at 89.52 um and drag the image's mean up with it. Such a
+        click still creates a record, excluded and carrying its reason, so the user can see
+        what they hit instead of the click appearing to do nothing.
 
         Returns an ``AddOutcome``, or ``None`` if there is no component to snap to.
         """
@@ -329,6 +366,23 @@ class AnalysisResult:
             else (_labels_under(seg, det.trace.rows, det.trace.cols) or {label})
         )
         record.labels = set(spanned)
+        # Recorded so the report says so, but never used to reject here: an explicit click is
+        # a human doing exactly the looking that `drop_rethreshold_merges` stands in for.
+        record.merged_labels = (
+            set()
+            if working is seg
+            else _dominating_components(
+                _label_counts_under(seg, det.trace.rows, det.trace.cols), label
+            )
+        )
+
+        # The one automatic rejection a click does not overrule; see the docstring.
+        unmeasurable = self.config.drop_invalid and record.measurement.invalid
+        reason = (
+            _measurement_rejection_reason(record.measurement, self.config)
+            if unmeasurable
+            else ""
+        )
 
         # Matched on `labels`, not `label`: a joined trace occupies every component it spans,
         # so clicking any of them must find the join rather than start a rival record.
@@ -366,18 +420,23 @@ class AnalysisResult:
             previous = existing.measurement
             was_excluded = existing.excluded
             existing.measurement = record.measurement
-            existing.excluded = False  # a click also brings back an auto-rejected AIS
-            existing.reason = ""
+            # A click also brings back an auto-rejected AIS -- unless the trace it just
+            # produced has no length at all, which no amount of clicking can change.
+            existing.excluded = unmeasurable
+            existing.reason = reason
             existing.source = "manual"
             existing.user_locked = True
             existing.label = label
             existing.threshold = level
             # A re-trace covers the clicked component, whatever the record spanned before.
             existing.labels = set(spanned)
+            existing.merged_labels = set(record.merged_labels)
             self.renumber()
             return AddOutcome(existing, "revived" if was_excluded else "retraced", previous)
 
         record.user_locked = True
+        record.excluded = unmeasurable
+        record.reason = reason
         self.assign_uid(record)
         self.records.append(record)
         self.renumber()
@@ -509,8 +568,8 @@ class AnalysisResult:
         for record in self.records:
             if record.user_locked or record.source != "auto":
                 continue
-            excluded = not self.config.accepts(record.measurement)
-            reason = _rejection_reason(record.measurement, self.config) if excluded else ""
+            excluded = not _accepts(record, self.config)
+            reason = _rejection_reason(record, self.config) if excluded else ""
             if excluded != record.excluded or reason != record.reason:
                 changed += 1
             record.excluded = excluded
@@ -631,12 +690,13 @@ def _redetect_at_own_threshold(
     Returns ``(detection, segmentation, threshold)``, with the segmentation the trace lives
     in so the caller can tell a rescaled result from an untouched one.
 
-    The second pass is seeded from the first pass's seed, because that is what the original
-    does: the human clicks near the AIS start, the image is re-thresholded, and they click
-    near the same place again. Tracing the rescaled component by the automatic
-    longest-walk-wins rule instead would be free to wander off down whatever else the lower
-    threshold has just joined on, and the record would no longer be about the AIS it started
-    from.
+    The first pass's seed identifies *which* component to carry across -- a lower threshold
+    only ever adds foreground, so that pixel is still inside a component here. The trace
+    itself then follows the ordinary automation rule of section 3.1: every endpoint tried,
+    longest walk wins. Seeding the walk at the carried-over point instead would start it
+    wherever that pixel happens to sit on the enlarged skeleton, which is usually no longer an
+    end, so the walk would cover one side only -- on this image that truncated 12 of the 24
+    rescaled traces, one of them by a third.
     """
     working, level = _threshold_for_component(image, seg, det.label, config)
     if working is seg:
@@ -644,7 +704,7 @@ def _redetect_at_own_threshold(
 
     seed = det.trace.seed
     label = working.nearest_label(int(seed[0]), int(seed[1]))
-    retraced = trace_component(working, label, seed_rc=seed) if label else None
+    retraced = trace_component(working, label) if label else None
     if retraced is None or len(retraced.trace) < config.min_trace_pixels:
         # The second pass produced nothing usable. A human would look at the figure and click
         # elsewhere; unattended, keeping the fixed-threshold trace beats dropping the AIS,
@@ -653,9 +713,55 @@ def _redetect_at_own_threshold(
     return retraced, working, level
 
 
-def _rejection_reason(measurement: AISMeasurement, config: AnalysisConfig) -> str:
+def _dominating_components(counts: dict, base_label: int) -> set:
+    """Components that hold more of the walk than the one whose peak set the threshold.
+
+    The test has to be asymmetric, because a merge affects both components involved and only
+    one of them is wrong. When a 10-pixel speck floods into a 175-pixel axon, *both* traces
+    now cross both components -- but the speck's trace is almost entirely the axon (so it is
+    measuring the wrong object) while the axon's trace is almost entirely still itself, with a
+    ten-pixel stub attached (so it is measuring the right one, slightly perturbed). Rejecting
+    on bare overlap loses the axon along with the speck; on this image that threw away six
+    perfectly good AIS.
+
+    "Holds more of the walk than the base component does" is the line, and it needs no
+    tunable: it says exactly what the rejection message says, that the trace measures some
+    other component rather than this one.
+    """
+    own = counts.get(base_label, 0)
+    return {label for label, n in counts.items() if label != base_label and n > own}
+
+
+def _accepts(record: AISRecord, config: AnalysisConfig) -> bool:
+    """Whether an automatically found AIS is kept. The record-level door onto the filters.
+
+    ``AnalysisConfig.accepts`` judges the measurement alone, which is everything except the
+    rethreshold merge -- that is a fact about which *component* was measured, not about the
+    numbers that came out of it, so it cannot be seen from the measurement.
+    """
+    if config.drop_rethreshold_merges and record.merged_labels:
+        return False
+    return config.accepts(record.measurement)
+
+
+def _rejection_reason(record: AISRecord, config: AnalysisConfig) -> str:
+    """Why ``_accepts`` said no, in words meant for whoever reads the report."""
+    if config.drop_rethreshold_merges and record.merged_labels:
+        listed = ", ".join(str(v) for v in sorted(record.merged_labels))
+        return (
+            f"re-thresholding to {record.threshold:.4f} merged component {record.label} into "
+            f"component {listed}; this trace measures those, not component {record.label}"
+        )
+    return _measurement_rejection_reason(record.measurement, config)
+
+
+def _measurement_rejection_reason(measurement: AISMeasurement, config: AnalysisConfig) -> str:
     if config.drop_invalid and measurement.invalid:
-        return measurement.warnings[0] if measurement.warnings else "invalid measurement"
+        return (
+            measurement.invalid_reason
+            or (measurement.warnings[0] if measurement.warnings else "")
+            or "invalid measurement"
+        )
     if config.drop_warned and measurement.warnings:
         return measurement.warnings[0]
     if config.min_length_um is not None and measurement.length_um < config.min_length_um:
@@ -723,12 +829,14 @@ def analyse_image(path, config: AnalysisConfig | None = None, progress=None) -> 
         if record is None:
             continue
         if working is not seg:
-            record.labels = _labels_under(seg, det.trace.rows, det.trace.cols) or {base_label}
-        if not config.accepts(record.measurement):
+            counts = _label_counts_under(seg, det.trace.rows, det.trace.cols)
+            record.labels = set(counts) or {base_label}
+            record.merged_labels = _dominating_components(counts, base_label)
+        if not _accepts(record, config):
             # Kept, but excluded: a rejected AIS still appears in the report with its
             # reason, so nothing disappears without an explanation.
             record.excluded = True
-            record.reason = _rejection_reason(record.measurement, config)
+            record.reason = _rejection_reason(record, config)
         records.append(record)
 
     result = AnalysisResult(
