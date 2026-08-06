@@ -241,6 +241,19 @@ main { display: flex; height: calc(100% - 48px - 2px - 26px); }
 }
 .controls input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
 .controls input[type=color]::-webkit-color-swatch { border: none; border-radius: 3px; }
+.controls select {
+  width: 100%; padding: 5px 6px; cursor: pointer;
+  color: var(--text); font: inherit; font-size: 11px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px;
+}
+/* Overrides the uppercase label styling `.ctl span` applies to every span in a control:
+   this one is a sentence about what the setting is currently doing, not a label. */
+.controls .ctlnote {
+  text-transform: none; letter-spacing: 0; font-size: 10px; line-height: 1.4;
+  color: var(--dim);
+}
+.controls .ctlnote:empty { display: none; }
+.controls .ctlnote.warn { color: var(--warn); }
 
 /* Quiet by design: the point is that autosave needs no attention, so it states where the
    file is and otherwise stays out of the way. It only raises its voice when it fails. */

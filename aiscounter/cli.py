@@ -25,7 +25,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import AnalysisConfig
+from .config import RETHRESHOLD_MODES, AnalysisConfig
 from .imaging import find_images
 from .pipeline import analyse_image
 from .report import write_report, write_xlsx
@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--spline-smooth", type=float, default=0.3, help="csaps smoothing p")
     g.add_argument("--min-component-pixels", type=int, default=70,
                    help="drop connected components smaller than this")
+    g.add_argument("--rethreshold", choices=RETHRESHOLD_MODES, default="original",
+                   help="'fixed' uses one Otsu threshold for the whole image; 'original' "
+                        "reproduces the original's per-AIS max_ais/max_all rescale, "
+                        "segmenting the image again for each AIS (slower, and not "
+                        "reproducible between analysts — see docs/DIFFERENCES.md 3.2)")
 
     a = p.add_argument_group("automatic detection filters")
     a.add_argument("--min-length", type=float, default=5.0, help="reject AIS shorter than this")
@@ -103,6 +108,7 @@ def config_from_args(args) -> AnalysisConfig:
         f_fraction=args.f_fraction,
         spline_smooth=args.spline_smooth,
         min_component_pixels=args.min_component_pixels,
+        rethreshold=args.rethreshold,
         channel=args.channel,
         min_length_um=args.min_length,
         max_length_um=args.max_length,

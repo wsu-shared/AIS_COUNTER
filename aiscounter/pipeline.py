@@ -33,7 +33,7 @@ from .detect import Detection, detect_all, trace_component
 from .imaging import AISImage, load_image
 from .matlab_compat import bwdist_indices
 from .measure import AISMeasurement, circularity, measure_from_trace
-from .segment import Segmentation, segment
+from .segment import Segmentation, rescale_threshold_for_component, segment
 
 JOIN_GAP_WARN_PX = 60
 """Bridge length beyond which a join is flagged rather than trusted.
@@ -76,6 +76,16 @@ class AISRecord:
 
     Set by every manual edit. Without it, nudging the minimum-length slider would silently
     resurrect traces the user had deleted, or bin ones they had explicitly added.
+    """
+
+    threshold: float = 0.0
+    """The threshold this trace was actually segmented at.
+
+    The same as the image's for every record in ``rethreshold="fixed"`` mode. In
+    ``"original"`` mode each AIS gets its own, so the image-level number in the summary sheet
+    no longer describes any particular measurement and this column is the only record of what
+    was used. 0.0 means "not recorded" -- a joined or spliced trace spans work done at
+    whatever its constituents used.
     """
 
     def __post_init__(self):
@@ -218,6 +228,15 @@ class AnalysisResult:
     segmentation: Segmentation
     records: list = field(default_factory=list)
     config: AnalysisConfig = field(default_factory=AnalysisConfig)
+    rethreshold: str = "fixed"
+    """The threshold mode these records were actually produced with.
+
+    Snapshotted rather than read back off ``config``, because the config is shared with the
+    session and a user can change the mode afterwards. Changing it does not re-analyse
+    anything, so the live setting and the setting these numbers came from are different
+    questions, and the report has to answer the second one.
+    """
+
     _next_uid: int = field(default=1, repr=False)
 
     @property
@@ -280,15 +299,36 @@ class AnalysisResult:
         if label == 0:
             return None
 
-        det = trace_component(seg, label, seed_rc=(row, col))
+        # The original's rethreshold loop, when the config asks for it. This is the one place
+        # it reproduces the original exactly: the click picks the component whose peak sets
+        # the new threshold, the whole image is segmented again, and the second click -- the
+        # same click, here -- takes whatever it now lands on, unconditionally.
+        working, level = _threshold_for_component(self.image, seg, label, self.config)
+        traced_label = label if working is seg else working.nearest_label(row, col)
+        if traced_label == 0:
+            return None
+
+        det = trace_component(working, traced_label, seed_rc=(row, col))
         if det is None or len(det.trace) < self.config.min_trace_pixels:
             return None
 
         record = _measure_detection(
-            self.image, det, index=len(self.records) + 1, config=self.config, source="manual"
+            self.image, det, index=len(self.records) + 1, config=self.config, source="manual",
+            label=label, threshold=level,
         )
         if record is None:
             return None
+
+        # A rescaled threshold can grow the component across what were separate components at
+        # the image threshold. Records are matched on the *base* segmentation's labels, so
+        # the spanned set has to be expressed in those terms or a click on the other end of
+        # the same axon would start a rival record.
+        spanned = (
+            {label}
+            if working is seg
+            else (_labels_under(seg, det.trace.rows, det.trace.cols) or {label})
+        )
+        record.labels = set(spanned)
 
         # Matched on `labels`, not `label`: a joined trace occupies every component it spans,
         # so clicking any of them must find the join rather than start a rival record.
@@ -311,7 +351,7 @@ class AnalysisResult:
             # rather than a trace to correct.
             same_trace = (
                 not existing.excluded
-                and existing.labels == {label}
+                and existing.labels == spanned
                 and np.array_equal(existing.measurement.x_pix, record.measurement.x_pix)
                 and np.array_equal(existing.measurement.y_pix, record.measurement.y_pix)
             )
@@ -331,7 +371,9 @@ class AnalysisResult:
             existing.source = "manual"
             existing.user_locked = True
             existing.label = label
-            existing.labels = {label}  # a re-trace covers one component, whatever it spanned
+            existing.threshold = level
+            # A re-trace covers the clicked component, whatever the record spanned before.
+            existing.labels = set(spanned)
             self.renumber()
             return AddOutcome(existing, "revived" if was_excluded else "retraced", previous)
 
@@ -527,8 +569,20 @@ def _measure_walk(
 
 
 def _measure_detection(
-    image: AISImage, det: Detection, index: int, config: AnalysisConfig, source: str = "auto"
+    image: AISImage,
+    det: Detection,
+    index: int,
+    config: AnalysisConfig,
+    source: str = "auto",
+    label: int | None = None,
+    threshold: float = 0.0,
 ) -> AISRecord | None:
+    """Measure one detection into a record.
+
+    *label* overrides the detection's own: with ``rethreshold="original"`` the trace comes
+    from a rescaled segmentation whose numbering means nothing to anyone else, so the record
+    is filed under the component it started from in the image's own segmentation.
+    """
     try:
         measurement = _measure_walk(
             image, det.trace.rows, det.trace.cols, config, index=index, seed_rc=det.trace.seed
@@ -539,7 +593,64 @@ def _measure_detection(
             raise RuntimeError(f"component {det.label} failed to measure: {exc}") from exc
     if measurement is None:
         return None
-    return AISRecord(index=index, label=det.label, measurement=measurement, source=source)
+    return AISRecord(
+        index=index,
+        label=det.label if label is None else int(label),
+        measurement=measurement,
+        source=source,
+        threshold=float(threshold),
+    )
+
+
+def _threshold_for_component(
+    image: AISImage, seg: Segmentation, label: int, config: AnalysisConfig
+) -> tuple:
+    """The segmentation one AIS should be traced in, and the threshold that produced it.
+
+    ``(seg, seg.threshold)`` unless ``config.rethreshold == "original"`` *and* the image's
+    brightest pixel falls outside this component -- which is the original's test for entering
+    its rethreshold loop, and is true for every component but one.
+
+    The returned segmentation is ``seg`` itself when nothing was rescaled, so callers can
+    test identity to know whether they are still in the image's own label numbering.
+    """
+    if config.rethreshold != "original":
+        return seg, seg.threshold
+
+    level = rescale_threshold_for_component(image.processed, seg.labels == label, seg.threshold)
+    if level == seg.threshold:
+        return seg, seg.threshold      # the original's `max_all==max_ais` -> `but=1`
+    return seg.rethresholded(level), level
+
+
+def _redetect_at_own_threshold(
+    image: AISImage, seg: Segmentation, det: Detection, config: AnalysisConfig
+) -> tuple:
+    """Re-trace an automatic detection through the original's rethreshold loop.
+
+    Returns ``(detection, segmentation, threshold)``, with the segmentation the trace lives
+    in so the caller can tell a rescaled result from an untouched one.
+
+    The second pass is seeded from the first pass's seed, because that is what the original
+    does: the human clicks near the AIS start, the image is re-thresholded, and they click
+    near the same place again. Tracing the rescaled component by the automatic
+    longest-walk-wins rule instead would be free to wander off down whatever else the lower
+    threshold has just joined on, and the record would no longer be about the AIS it started
+    from.
+    """
+    working, level = _threshold_for_component(image, seg, det.label, config)
+    if working is seg:
+        return det, seg, level
+
+    seed = det.trace.seed
+    label = working.nearest_label(int(seed[0]), int(seed[1]))
+    retraced = trace_component(working, label, seed_rc=seed) if label else None
+    if retraced is None or len(retraced.trace) < config.min_trace_pixels:
+        # The second pass produced nothing usable. A human would look at the figure and click
+        # elsewhere; unattended, keeping the fixed-threshold trace beats dropping the AIS,
+        # and the recorded threshold says which one it is.
+        return det, seg, seg.threshold
+    return retraced, working, level
 
 
 def _rejection_reason(measurement: AISMeasurement, config: AnalysisConfig) -> str:
@@ -603,9 +714,16 @@ def analyse_image(path, config: AnalysisConfig | None = None, progress=None) -> 
     records = []
     for i, det in enumerate(detections, start=1):
         report("measuring", i, len(detections))
-        record = _measure_detection(image, det, index=len(records) + 1, config=config)
+        base_label = det.label
+        det, working, level = _redetect_at_own_threshold(image, seg, det, config)
+        record = _measure_detection(
+            image, det, index=len(records) + 1, config=config,
+            label=base_label, threshold=level,
+        )
         if record is None:
             continue
+        if working is not seg:
+            record.labels = _labels_under(seg, det.trace.rows, det.trace.cols) or {base_label}
         if not config.accepts(record.measurement):
             # Kept, but excluded: a rejected AIS still appears in the report with its
             # reason, so nothing disappears without an explanation.
@@ -613,8 +731,43 @@ def analyse_image(path, config: AnalysisConfig | None = None, progress=None) -> 
             record.reason = _rejection_reason(record.measurement, config)
         records.append(record)
 
-    result = AnalysisResult(image=image, segmentation=seg, records=records, config=config)
+    result = AnalysisResult(
+        image=image, segmentation=seg, records=records, config=config,
+        rethreshold=config.rethreshold,
+    )
+    if config.rethreshold == "original":
+        _flag_shared_components(records)
+        result.apply_filters()  # a warning added just now still has to reach --drop-warned
     for record in records:
         result.assign_uid(record)
     result.renumber()
     return result
+
+
+def _flag_shared_components(records: list) -> None:
+    """Warn where two AIS ended up claiming the same component of the image.
+
+    Only reachable with ``rethreshold="original"``. Each AIS is segmented at its own, lower
+    threshold, so one trace can spread across a component another AIS was measured from, and
+    the same axon then appears twice. A person running the original never meets this -- they
+    measure one AIS per run and look at the figure -- but a batch pass would report the
+    duplicate silently, and the count is the headline number.
+
+    Flagged, not dropped: which of the two overlapping traces is the real AIS is a judgement
+    about the picture, and ``--drop-warned`` is there for anyone who wants the strict rule.
+    Both members of a pair are flagged, since neither is more suspect than the other. Records
+    already excluded are ignored -- a rejected trace overlapping a good one is not a double
+    count of anything.
+    """
+    live = [r for r in records if not r.excluded]
+    for i, first in enumerate(live):
+        for second in live[i + 1:]:
+            shared = sorted(first.labels & second.labels)
+            if not shared:
+                continue
+            listed = ", ".join(str(label) for label in shared)
+            for record, other in ((first, second), (second, first)):
+                record.measurement.warnings = list(record.measurement.warnings) + [
+                    f"after re-thresholding this shares component {listed} with the AIS "
+                    f"traced from component {other.label} — check they are not the same axon"
+                ]

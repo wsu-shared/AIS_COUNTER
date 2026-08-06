@@ -98,6 +98,18 @@
         <input type="range" id="circ" min="0" max="1" step="0.01" value="1"
                title="Excludes traces that curl back on themselves — 0 keeps only straight traces, 1 keeps everything. Loops are usually noise, not axons.">
       </label>
+      <label class="ctl">
+        <span class="ctlhead">
+          <span>threshold</span>
+          <output id="threshval"></output>
+        </span>
+        <select id="rethreshold"
+                title="fixed: one Otsu threshold for the whole image, the same for every AIS — reproducible, and the default.&#10;original: reproduce ais_auto.m's rethreshold loop — each AIS is measured at its own threshold, scaled down by its own peak brightness (max_ais/max_all), which segments the image again for every AIS.&#10;Switching does not re-analyse what is already on screen: press R for that. Clicks use the new mode straight away.">
+          <option value="fixed">fixed &mdash; one Otsu threshold per image</option>
+          <option value="original">original &mdash; rescale per AIS (ais_auto.m)</option>
+        </select>
+        <span id="threshnote" class="ctlnote"></span>
+      </label>
       <label class="ctl row">
         <span>skeleton colour</span>
         <input type="color" id="skelcolor" value="#ff00ff" title="Colour of drawn skeletons">

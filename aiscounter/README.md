@@ -39,6 +39,9 @@ optimistically, so they feel instant regardless.
 
 # no UI: analyse a whole folder and write the reports, plus one combined workbook
 .venv/bin/python -m aiscounter "example-images/TM" --batch --outdir results --combined results/ALL.xlsx
+
+# measure the way a hand-run ais_auto.m session would, re-thresholding for each AIS
+.venv/bin/python -m aiscounter "example-images/TM" --batch --rethreshold original
 ```
 
 Point it at the raw `.tif`, the `- Processed method 2.5.tif`, a `.czi`, or a directory — the
@@ -119,6 +122,54 @@ own peak and its own crossings.
 
 Both are ordinary undo steps (`U`).
 
+### Threshold mode
+
+The **threshold** dropdown picks how the level each AIS is segmented at is chosen. The number
+beside it is the image's own Otsu threshold.
+
+* **fixed — one Otsu threshold per image** (`--rethreshold fixed`). Every AIS in the image is
+  measured at the same level. Two people analysing the same image get the same numbers.
+* **original — rescale per AIS** (`--rethreshold original`, **the default on this command
+  line**). Reproduces `ais_auto.m`'s
+  rethreshold loop: for each AIS the threshold is multiplied by that AIS's own peak brightness
+  over the image's (`max_ais/max_all`) and the whole image is segmented again. The one
+  component holding the image's brightest pixel is left alone — that is the loop's exit
+  branch — and every other AIS is measured at a lower threshold, so it comes out thicker and
+  usually longer.
+
+Use **original** to compare against numbers from a hand-run MATLAB session, and **fixed** for
+anything that has to be reproducible. On the example image the difference is real but not
+wild: 21 AIS averaging 19.16 µm becomes 25 averaging 21.45 µm.
+
+`--rethreshold` defaults to **original** so that a run off this command line matches a
+hand-run session. The *library* default is still `fixed` — `AnalysisConfig().rethreshold` —
+so anything importing `aiscounter` keeps the reproducible behaviour unless it asks otherwise.
+Both defaults are pinned by a test, so neither can drift by accident.
+
+**Where to see the per-AIS threshold.** The number beside the dropdown is the image's Otsu
+level and never moves — in **original** mode it is labelled `base`, because it is only the
+starting point the rescale multiplies. The levels each AIS was actually measured at appear:
+
+* in the status line as you click — *"added #4 = 4.35 um — threshold 0.1077, rescaled from
+  0.1451"*, and it says explicitly when an AIS was **not** rescaled, which happens for the one
+  component holding the image's brightest pixel;
+* under the dropdown as a span — *"per-AIS thresholds 0.1077–0.1393 across 4 traces"*;
+* on each sidebar row's tooltip, with its component number;
+* per row in the report's `threshold` column.
+
+Two things to know about the mode:
+
+* **Switching does not re-analyse what is on screen.** Re-thresholding re-segments the image,
+  so every trace would have to be recomputed and every edit on them discarded — and a curation
+  session is hours of work. The panel says when what you are looking at predates the switch;
+  press `R` to bring that image up to date. Clicks use the new mode immediately, because a
+  click runs the loop itself and is the one place this reproduces the original exactly.
+* **In `--auto` it can report an axon twice.** A threshold scaled down by a dim AIS's own peak
+  can grow that AIS across a neighbour. Any two traces that end up sharing a component are
+  flagged — `!` in the sidebar, the reason in the `note` column — and `--drop-warned` excludes
+  them outright. This is inherent to running the loop unattended; the original never meets it
+  because it measures one AIS per run.
+
 ### Filtering and display
 
 The **min AIS length** slider re-applies the length cut-off to the image in front of you
@@ -167,9 +218,9 @@ click into a long wait.
   length; circles mark AIS start, squares mark AIS end.
 * `<name>_ais_results.xlsx` — three sheets:
   * **AIS** — one row per AIS: `length_um`, `arclength_um`, `circularity`, start/end/mid/max,
-    seed, and a note. Excluded rows are kept and shaded, with the reason, so nothing vanishes
-    silently.
-  * **Summary** — one row per image: n, mean, median, SD, range, threshold used.
+    seed, the `threshold` it was measured at, and a note. Excluded rows are kept and shaded,
+    with the reason, so nothing vanishes silently.
+  * **Summary** — one row per image: n, mean, median, SD, range, threshold and threshold mode.
   * **Parameters** — every setting used, for provenance.
 * `ais_results_autosave.csv` — the **AIS** table for every image analysed so far, rewritten
   continuously during a review session (see above).
@@ -186,7 +237,7 @@ work. `arclength_um` is the true spline arc length, which the original computes 
 |---|---|
 | `matlab_compat.py` | MATLAB primitives (`mat2gray`, `imfilter`, `graythresh`, `bwmorph thin`, ...) |
 | `imaging.py` | loading TIFF pairs and CZI, deriving a processed channel when absent |
-| `segment.py` | smooth → threshold → open/close → connected components |
+| `segment.py` | smooth → threshold → open/close → connected components, and the original's per-AIS rescale |
 | `trace.py` | the skeleton walk, branch handling, longest-path selection |
 | `measure.py` | spline → intensity profile → AIS start/end/length |
 | `detect.py` | seed selection: what replaces the human click |
@@ -211,15 +262,18 @@ after a deliberate change to the numerics:
 ```
 
 Join and splice are not covered by those fixtures — they have no counterpart in the original —
-so `tests/test_edits.py` covers them against synthetic images instead.
+so `tests/test_edits.py` covers them against synthetic images instead. `tests/test_rethreshold.py`
+does the same for the threshold mode, on a synthetic pair of one bright and one dim axon so
+that both branches of the original's `max_all==max_ais` test are exercised by one image.
 
 ## Two things worth knowing
 
-**The threshold is fixed per image (Otsu by default).** The original re-thresholds by
-`max_ais/max_all` when the brightest pixel misses the clicked component — which can't be done
-per component (only one component holds the global maximum) and isn't reproducible anyway,
-since it depends on which AIS was clicked first. Fixing the threshold is a deliberate gain in
-reproducibility, and the biggest behavioural difference from a hand-run session.
+**Which threshold is used is a switch.** The original re-thresholds by `max_ais/max_all` when
+the brightest pixel misses the clicked component, which happens for every AIS but one and
+isn't reproducible between analysts, since the rescale depends on which AIS was clicked first.
+Holding the threshold fixed per image is a deliberate gain in reproducibility and the biggest
+behavioural difference from a hand-run session — so both are available, and this command line
+defaults to reproducing the original. See [Threshold mode](#threshold-mode).
 
 **Some of the original's lengths are arithmetically meaningless.** When the profile never
 exceeds `f` after its peak, the original uses an x *coordinate* as an *index* — in the example

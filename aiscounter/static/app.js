@@ -130,6 +130,8 @@ function renderControls(data) {
     $('#skelwidthval').textContent = Number(s.skeletonWidth).toFixed(1) + ' px';
   }
 
+  renderThreshold(data);
+
   // "reset to the automatic detections" is a lie when there were none: in manual mode the
   // same key empties the image instead, and the button should say so.
   $('#reset').title = s.auto === false
@@ -137,6 +139,50 @@ function renderControls(data) {
     : 'Reset to automatic detections (R)';
 
   renderAutosave(data.autosave);
+}
+
+/* The threshold control says three things at once, because the setting and what is on screen
+   can disagree: the mode selected, the image's own Otsu level, and -- when they differ --
+   that the traces in front of the user predate the switch and need R to catch up. */
+function renderThreshold(data) {
+  const s = data.settings, select = $('#rethreshold'), note = $('#threshnote');
+  if (!select) return;
+  if (document.activeElement !== select) select.value = s.rethreshold || 'fixed';
+
+  // The image's own Otsu level. In original mode it is only the starting point the rescale
+  // multiplies, and it never moves -- so it is labelled "base" there, or it reads as a
+  // setting that is refusing to update.
+  const level = Number(data.image && data.image.threshold);
+  const shown = Number.isFinite(level) ? level.toFixed(3) : '';
+  $('#threshval').textContent = shown && s.rethreshold === 'original' ? shown + ' base' : shown;
+
+  const applied = s.rethresholdApplied || s.rethreshold;
+  if (applied !== s.rethreshold) {
+    note.className = 'ctlnote warn';
+    note.textContent = applied === 'mixed'
+      ? 'these traces mix both modes — press R to re-analyse in ' + s.rethreshold
+      : 'these traces were measured in ' + applied + ' mode — press R to re-analyse';
+  } else if (s.rethreshold === 'original') {
+    note.className = 'ctlnote';
+    note.textContent = perAisThresholdNote(data);
+  } else {
+    note.className = 'ctlnote';
+    note.textContent = '';
+  }
+}
+
+/* Proof that the rescale is doing something, without a column per row: the span of levels the
+   traces on screen were actually measured at. The image's own threshold cannot show this --
+   it is one number per image by definition -- and the per-AIS levels otherwise only appear in
+   the report, which is too late to answer "is this switch working?". */
+function perAisThresholdNote(data) {
+  const levels = data.records.filter((r) => !r.excluded && r.threshold)
+                             .map((r) => r.threshold);
+  if (!levels.length) return 'each AIS is re-thresholded from its own peak as you add it';
+  const lo = Math.min(...levels), hi = Math.max(...levels);
+  const span = lo === hi ? lo.toFixed(4) : `${lo.toFixed(4)}–${hi.toFixed(4)}`;
+  return `per-AIS thresholds ${span} across ${levels.length} trace`
+    + (levels.length === 1 ? '' : 's');
 }
 
 /* 1.00 is "keep everything", which is worth saying in words -- a bare 1.00 reads like a
@@ -317,6 +363,11 @@ function renderSidebar() {
       + `<span class="len">${r.length} µm</span>`
       + (r.warnings.length ? `<span class="flag" title="${escapeHtml(r.warnings[0])}">!</span>` : '')
       + `<button class="del" title="Delete">✕</button>`;
+    // Under rethreshold="original" each trace has its own level, and which one is a fair
+    // question to ask of a specific row rather than of the image.
+    if (r.threshold && d.settings.rethreshold === 'original') {
+      li.title = `component ${r.label} · threshold ${r.threshold.toFixed(4)}`;
+    }
     li.addEventListener('pointerenter', () => setHot(r.uid));
     li.addEventListener('pointerleave', () => setHot(null));
     li.addEventListener('click', (e) => {
@@ -515,6 +566,14 @@ function onCircularity(value) {
 async function setSkeletonColor(value) {
   const res = await api('/api/settings', { skeletonColor: value });
   if (res) { render(res, { fit: false }); flash(res.message); }
+}
+
+/* Not debounced and not applied retroactively: this one re-segments the image, so it changes
+   what the next analysis and the next click do rather than what is already measured. Toasted
+   as well as flashed because it is the only setting whose effect is not visible immediately. */
+async function setRethreshold(value) {
+  const res = await api('/api/settings', { rethreshold: value });
+  if (res) { render(res, { fit: false }); flash(res.message); toast(res.message); }
 }
 
 let widthTimer;
@@ -766,6 +825,12 @@ function wire() {
   $('#minlen').addEventListener('input', (ev) => onMinLength(ev.target.value));
   $('#circ').addEventListener('input', (ev) => onCircularity(ev.target.value));
   $('#skelwidth').addEventListener('input', (ev) => onSkeletonWidth(ev.target.value));
+  // Blurred on the way out: the note this switch raises tells the user to press R, and the
+  // keyboard handler ignores keys while a form control has focus.
+  $('#rethreshold').addEventListener('change', (ev) => {
+    ev.target.blur();
+    setRethreshold(ev.target.value);
+  });
   // Recolour locally on input for instant feedback while the picker is open; only tell the
   // server on change, when the user has settled on one.
   $('#skelcolor').addEventListener('input', (ev) =>
@@ -801,7 +866,10 @@ function wire() {
   }).observe($('#viewport'));
 
   document.addEventListener('keydown', (ev) => {
-    if (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA') return;
+    // SELECT included: arrow keys move through its options, and letting them page the image
+    // at the same time would leave the user looking at a different picture mid-choice.
+    const tag = ev.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
     const k = ev.key.toLowerCase();
 
     if ((ev.metaKey || ev.ctrlKey) && k === 'z') { ev.preventDefault(); return doUndo(); }

@@ -90,7 +90,7 @@ symmetrically about the peak, so reversing a profile swaps the two crossings and
 `ais_end - ais_start` unchanged. Direction does affect the reported *positions*
 (`start_um`/`mid_um`/`max_um`), which is why the rule is fixed and documented.
 
-### 3.2 The rethreshold loop is not applied per component
+### 3.2 The rethreshold loop is a switch, and defaults to off
 
 The original re-thresholds when the image's brightest pixel is not inside the clicked
 component:
@@ -99,19 +99,52 @@ component:
 threshold = (max_ais/max_all)*threshold;
 ```
 
-This cannot be automated per component, because the global maximum lies in exactly **one**
-component by definition — every other AIS would rescale the threshold. Worse, it is not
-reproducible even by hand: the rescale depends on *which* AIS the human clicked first, so two
-people analysing the same image with the same settings get different thresholds. (This is the
-"max pixel is not in ais region" message the workflow notes say appears "99 times out of
-100"; the second pass then accepts whatever is clicked, because `loop==1` sets `but=1`
-unconditionally.)
+The global maximum lies in exactly **one** component by definition, so this fires for every
+AIS but that one, and always *lowers* the threshold. (This is the "max pixel is not in ais
+region" message the workflow notes say appears "99 times out of 100"; the second pass then
+accepts whatever is clicked, because `loop==1` sets `but=1` unconditionally.) It is also not
+reproducible by hand: the rescale depends on *which* AIS the human clicked first, so two
+people analysing the same image with the same settings get different thresholds.
 
-`aiscounter` therefore uses **one fixed threshold per image** — Otsu by default, exactly as
-`threshold=0` does in the original. This is a deliberate improvement in reproducibility, and
-the single largest behavioural difference from a hand-run session. The rescale itself is
-available as `segment.rescale_threshold_for_component` if you need to reproduce a specific
-historical run.
+Both behaviours are available, as `AnalysisConfig.rethreshold` / `--rethreshold` / the
+**threshold** dropdown in the reviewer:
+
+| mode | what it does |
+|---|---|
+| `fixed` | **One threshold per image** — Otsu, exactly as `threshold=0` does in the original *before* the loop rescales it. Every AIS in the image is measured at it. |
+| `original` | **Reproduce the loop.** Each AIS rescales the threshold by its own `max_ais/max_all` and the whole image is segmented again for it, so every AIS is measured at its own level. |
+
+The two defaults differ on purpose. `AnalysisConfig.rethreshold` is **`fixed`**, so anything
+importing the library gets the reproducible behaviour unless it asks otherwise; `--rethreshold`
+is **`original`**, so a run off this command line matches a hand-run MATLAB session. Both are
+pinned by tests so that neither drifts silently.
+
+Notes on `original`:
+
+* **The rescale ratio and the threshold are on different scales.** `max_ais/max_all` is taken
+  on the raw processed values, while the threshold applies to the `mat2gray`-normalised,
+  smoothed image. The original does this; so does the port. It is why the rescaled levels are
+  much lower than a "fraction of the peak" intuition suggests.
+* **The exit branch is preserved exactly.** For the one component holding the image's
+  brightest pixel, `max_all==max_ais` sets `but=1` and nothing is re-thresholded — that AIS is
+  measured identically in both modes, pixel for pixel. `test_clicking_the_brightest_ais_is_identical_in_both_modes` pins it.
+* **Clicking reproduces the original exactly.** The click selects the component whose peak
+  sets the new threshold, the image is segmented again, and the same click takes whatever it
+  now lands on — which is what the original's second `ginput` does.
+* **`--auto` is a best-effort mapping, not a reproduction.** With no click, the loop is run
+  once per component of the first segmentation, seeded from that component's own trace start
+  (the original's human clicks near the same place both times). A dim AIS's lower threshold
+  can grow it across a neighbour, so the same axon can be reported twice; any two traces
+  sharing a component are flagged in the `note` column and `--drop-warned` excludes them.
+* **It costs about 0.15s per AIS**, since the image is segmented again for each one — ~6s
+  rather than ~1.8s on the example image. `mat2gray` and the Gaussian are not repeated.
+
+The per-AIS levels are written to the report as the `threshold` column, and the mode as
+`rethreshold` on the summary sheet, so any run says which arithmetic produced it. In the
+reviewer they appear in the status line as each AIS is added, as a span under the dropdown,
+and on each sidebar row — the number *beside* the dropdown is the image's own Otsu level,
+which in this mode is only the base the rescale multiplies and so never moves. The rescale on
+its own is `segment.rescale_threshold_for_component`.
 
 ### 3.3 Rejecting the `ais_end` bug instead of eyeballing it
 

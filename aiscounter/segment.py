@@ -22,6 +22,15 @@ from .matlab_compat import (
     mat2gray,
 )
 
+RETHRESHOLD_CACHE = 2
+"""How many rescaled segmentations to keep per image.
+
+Each one costs ~9 MB (binary, cleaned and the label matrix; the grey and smoothed images are
+shared, not copied), and a session holds every image it has analysed, so this cannot be
+unbounded. Two is enough for what the cache is actually for: re-clicking the same AIS, and
+alternating between two of them, are the interactions where a recompute would be noticed.
+Anything else recomputes in ~0.15s, which is below the threshold of feeling slow."""
+
 
 @dataclass
 class ComponentGeometry:
@@ -59,13 +68,53 @@ class Segmentation:
     cleaned: np.ndarray       # after open + close
     labels: np.ndarray        # 1-based label matrix, 0 = background
     components: list          # column-major linear indices per component
+    min_pixels: int = 70      # the cull that produced `components`, kept for `rethresholded`
     _geometry: dict = field(default_factory=dict, repr=False)
     _background_index: object = field(default=None, repr=False)
     _boxes: object = field(default=None, repr=False)
+    _rethreshold_cache: dict = field(default_factory=dict, repr=False)
 
     @property
     def n_components(self) -> int:
         return len(self.components)
+
+    def rethresholded(self, level: float) -> "Segmentation":
+        """The same image segmented again at *level*, sharing the smoothed image.
+
+        ``mat2gray`` and the 20x20 Gaussian do not depend on the threshold and are the
+        expensive half of ``segment`` (~0.6s of ~0.8s), so only ``im2bw`` onwards is redone.
+        That matters because the original's rethreshold loop segments the whole image again
+        for every AIS it measures -- see ``rescale_threshold_for_component``.
+
+        Lowering the threshold can only add foreground pixels, and both opening and closing
+        are increasing, so every component here is a superset of a component of ``self``:
+        a pixel that belonged to a component before still belongs to one, which is what lets
+        a caller carry a seed across from the original segmentation.
+        """
+        level = float(level)
+        cached = self._rethreshold_cache.get(level)
+        if cached is not None:
+            return cached
+
+        binary = im2bw(self.smoothed, level)
+        cleaned = imclose_square(imopen_square(binary, 3), 3)
+        components, labels = bwconncomp(cleaned, connectivity=8, min_pixels=self.min_pixels)
+        derived = Segmentation(
+            gray=self.gray,
+            smoothed=self.smoothed,
+            threshold=level,
+            binary=binary,
+            cleaned=cleaned,
+            labels=labels,
+            components=components,
+            min_pixels=self.min_pixels,
+        )
+
+        # Insertion-ordered, so the oldest entry is the first key.
+        while len(self._rethreshold_cache) >= RETHRESHOLD_CACHE:
+            self._rethreshold_cache.pop(next(iter(self._rethreshold_cache)))
+        self._rethreshold_cache[level] = derived
+        return derived
 
     def geometry(self, label: int) -> ComponentGeometry:
         """Cropped mask + skeleton for *label*, computed once and cached.
@@ -164,6 +213,7 @@ def segment(
         cleaned=cleaned,
         labels=labels,
         components=components,
+        min_pixels=min_pixels,
     )
 
 
@@ -175,9 +225,14 @@ def rescale_threshold_for_component(
     Returns the rescaled threshold, or the threshold unchanged when the globally
     brightest pixel already falls inside *component_mask*.
 
-    Only meaningful for one component per image -- the brightest pixel lives in exactly
-    one place -- which is why the automatic pipeline does not apply this per component.
-    See ``docs/DIFFERENCES.md``.
+    The brightest pixel lives in exactly one place, so at most one component per image comes
+    back unchanged and every other one gets a *lower* threshold -- which is why applying this
+    is a per-AIS decision rather than an image-wide one, and why it is off unless
+    ``AnalysisConfig.rethreshold`` asks for it. See ``docs/DIFFERENCES.md`` section 3.2.
+
+    Note that the ratio is taken on the raw processed values while the threshold applies to
+    the ``mat2gray``-normalised, smoothed image. The two are on different scales; the
+    original does it this way, so this does too.
     """
     from .matlab_compat import im2double
 

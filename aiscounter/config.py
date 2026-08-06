@@ -12,6 +12,15 @@ from dataclasses import dataclass
 
 from .measure import F_FRACTION, PIXCONV, SPLINE_SMOOTH, circularity
 
+RETHRESHOLD_MODES = ("fixed", "original")
+"""The two ways of choosing the threshold each AIS is segmented at.
+
+``"fixed"``    one Otsu threshold for the whole image, used for every AIS in it.
+``"original"`` the original's per-AIS ``max_ais/max_all`` rescale, applied once per AIS.
+
+See ``AnalysisConfig.rethreshold`` and ``docs/DIFFERENCES.md`` section 3.2.
+"""
+
 
 @dataclass
 class AnalysisConfig:
@@ -24,6 +33,33 @@ class AnalysisConfig:
     f_fraction: float = F_FRACTION  # 0.33, Grubb & Burrone 2010
     spline_smooth: float = SPLINE_SMOOTH  # csaps p = 0.3
     min_component_pixels: int = 70  # the original's `numPixels<70` cull
+
+    rethreshold: str = "fixed"
+    """Whether to run the original's rethreshold loop for each AIS.
+
+    The original thresholds the image once, then -- if the brightest pixel in the *whole
+    image* is not inside the AIS you clicked -- multiplies the threshold by
+    ``max_ais/max_all`` and segments the entire image again, accepting whatever the second
+    click lands on. Since the brightest pixel is inside exactly one component, this fires for
+    almost every AIS ("99 times out of 100"), and always lowers the threshold.
+
+    ``"fixed"``    one Otsu threshold per image, used for every AIS in it. The default,
+                   because it is reproducible: two people analysing the same image get the
+                   same numbers. This is what ``threshold=0`` does in the original *before*
+                   the loop rescales it.
+    ``"original"`` reproduce the loop. Each AIS is measured at its own threshold, derived
+                   from its own peak intensity, so a dim AIS is segmented at a much lower
+                   threshold than a bright one and comes out thicker and often longer. Run to
+                   compare against hand-run MATLAB numbers, or when a historical figure has
+                   to be reproduced.
+
+    In ``original`` mode the threshold each AIS was actually measured at is written to the
+    report as ``threshold``, because it is no longer a property of the image.
+
+    Costs about 0.15s per AIS -- the image is segmented again for each one. See
+    ``docs/DIFFERENCES.md`` section 3.2 for why the original's rescale is not reproducible
+    between people, which is the reason it is not the default.
+    """
 
     # --- automation-only knobs ----------------------------------------------------
     channel: int = 0                # CZI channel; the original always uses Ch1
@@ -69,6 +105,14 @@ class AnalysisConfig:
     Thin enough to see the axon underneath by default; thicker reads better on a projector
     or in a figure. Like the colour, presentation only. The saved PNG scales it to matplotlib
     points so that the default reproduces the 1.6 pt line reports have always used."""
+
+    def __post_init__(self):
+        # Caught here rather than at the point of use: a typo'd mode would otherwise be
+        # indistinguishable from "fixed" and silently produce the wrong numbers.
+        if self.rethreshold not in RETHRESHOLD_MODES:
+            raise ValueError(
+                f"rethreshold must be one of {RETHRESHOLD_MODES}, got {self.rethreshold!r}"
+            )
 
     def accepts(self, measurement) -> bool:
         """Whether an automatically detected AIS is plausible enough to keep.

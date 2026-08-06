@@ -28,7 +28,7 @@ LABEL_COLOUR = "#FFEB3B"
 ROW_HEADERS = [
     "image", "ais", "uid", "included", "source", "length_um", "arclength_um",
     "circularity", "start_um", "end_um", "mid_um", "max_um", "profile_points",
-    "seed_row", "seed_col", "component_label", "note",
+    "seed_row", "seed_col", "component_label", "threshold", "note",
 ]
 """Column order for the per-AIS table, shared by the workbook and the CSV so the two
 never drift apart."""
@@ -159,6 +159,12 @@ def _rows_for(result) -> list:
                     if len(record.labels) > 1
                     else record.label
                 ),
+                # The threshold this AIS was measured at, which is the image's own except
+                # under rethreshold="original", where every AIS has its own. Falls back to
+                # the image threshold for joined and spliced traces, which do not record one.
+                "threshold": round(
+                    float(record.threshold or result.segmentation.threshold), 6
+                ),
                 "note": record.reason or "; ".join(m.warnings),
             }
         )
@@ -197,8 +203,8 @@ def write_xlsx(results, path, config=None) -> Path:
     ws2 = wb.create_sheet("Summary")
     ws2.append(
         ["image", "n_ais", "mean_length_um", "median_length_um", "sd_length_um",
-         "min_length_um", "max_length_um", "n_excluded", "threshold", "pixconv_um",
-         "processed_derived"]
+         "min_length_um", "max_length_um", "n_excluded", "threshold", "rethreshold",
+         "pixconv_um", "processed_derived"]
     )
     for result in results:
         L = result.lengths
@@ -213,6 +219,9 @@ def write_xlsx(results, path, config=None) -> Path:
             round(float(L.max()), 4) if L.size else None,
             n_excl,
             round(float(result.segmentation.threshold), 6),
+            # In "original" mode the image-level threshold above is only the starting point:
+            # each AIS was measured at its own, in the per-AIS sheet's threshold column.
+            result.rethreshold,
             result.config.pixconv or result.image.pixconv,
             result.image.processed_is_derived,
         ])

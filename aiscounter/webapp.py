@@ -33,7 +33,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import AnalysisConfig
+from .config import RETHRESHOLD_MODES, AnalysisConfig
 from .imaging import find_images
 from .measure import circularity
 from .pipeline import analyse_image
@@ -91,7 +91,8 @@ def _checkpoint(result) -> list:
     are only ever replaced wholesale, never mutated in place.
     """
     return [
-        (r, r.measurement, r.excluded, r.reason, r.source, r.label, set(r.labels), r.user_locked)
+        (r, r.measurement, r.excluded, r.reason, r.source, r.label, set(r.labels),
+         r.user_locked, r.threshold)
         for r in result.records
     ]
 
@@ -103,7 +104,9 @@ def _restore(result, checkpoint: list) -> None:
     removed since come back because it still holds them.
     """
     result.records = [row[0] for row in checkpoint]
-    for record, measurement, excluded, reason, source, label, labels, locked in checkpoint:
+    for record, measurement, excluded, reason, source, label, labels, locked, threshold in (
+        checkpoint
+    ):
         record.measurement = measurement
         record.excluded = excluded
         record.reason = reason
@@ -111,6 +114,7 @@ def _restore(result, checkpoint: list) -> None:
         record.label = label
         record.labels = labels
         record.user_locked = locked
+        record.threshold = threshold
     result.renumber()
 
 
@@ -304,6 +308,9 @@ class Session:
             "excluded": record.excluded,
             "reason": record.reason,
             "source": record.source,
+            # Only interesting under rethreshold="original", where it is the whole point:
+            # each AIS is measured at its own level and the image no longer has just one.
+            "threshold": round(float(record.threshold), 6) if record.threshold else None,
             "invalid": m.invalid,
             "warnings": m.warnings,
             "points": points,
@@ -354,6 +361,11 @@ class Session:
                     "maxCircularity": round(float(self.config.max_circularity), 2),
                     "skeletonColor": self.config.skeleton_color,
                     "skeletonWidth": round(float(self.config.skeleton_width), 1),
+                    "rethreshold": self.config.rethreshold,
+                    # What the records on screen were actually measured with, which is not
+                    # the same thing as the setting: switching modes does not re-analyse
+                    # anything already on screen (see set_rethreshold).
+                    "rethresholdApplied": self._applied_rethreshold(result),
                 },
                 "autosave": {
                     "path": str(self.autosave_path) if self.autosave_path else "",
@@ -394,6 +406,21 @@ class Session:
         self.saved.discard(index)
         self.schedule_autosave()
 
+    def _threshold_note(self, result, record) -> str:
+        """What this click did to the threshold, for the status line.
+
+        Silent in fixed mode, where there is only one threshold to talk about. In original
+        mode it always says something, including when the rescale did *not* fire -- that is
+        the one AIS holding the image's brightest pixel, and without a word for it the user
+        sees an unchanged number and reasonably concludes the mode is not working.
+        """
+        if self.config.rethreshold != "original":
+            return ""
+        base = float(result.segmentation.threshold)
+        if record.threshold and record.threshold != base:
+            return f" — threshold {record.threshold:.4f}, rescaled from {base:.4f}"
+        return f" — threshold {base:.4f}, not rescaled (this AIS holds the brightest pixel)"
+
     def add(self, index: int, row: int, col: int) -> str:
         result = self.result_for(index)
         with self.lock:
@@ -409,7 +436,10 @@ class Session:
             verb = {"added": "added", "revived": "restored", "retraced": "re-traced"}[
                 outcome.action
             ]
-            return f"{verb} #{outcome.record.index} = {outcome.record.length_um:.2f} um"
+            return (
+                f"{verb} #{outcome.record.index} = {outcome.record.length_um:.2f} um"
+                + self._threshold_note(result, outcome.record)
+            )
 
     def delete(self, index: int, row: int, col: int) -> str:
         result = self.result_for(index)
@@ -513,6 +543,46 @@ class Session:
             return "loop filter off" + (f" — {changed} trace(s) changed" if changed else "")
         suffix = f" — {changed} trace(s) changed" if changed else ""
         return f"max circularity {value:.2f}{suffix}"
+
+    @staticmethod
+    def _applied_rethreshold(result) -> str:
+        """The mode the records on screen were actually produced with.
+
+        A different question from the live setting: switching modes does not re-analyse, so
+        an image can hold automatic detections from one mode and clicks from the other.
+        ``"mixed"`` is that case, and is what stops the panel claiming a fixed threshold for
+        an image where half the traces were re-thresholded by hand.
+        """
+        base = float(result.segmentation.threshold)
+        if result.rethreshold == "original":
+            return "original"
+        return "mixed" if any(r.threshold not in (0.0, base) for r in result.records) else "fixed"
+
+    def set_rethreshold(self, value: str) -> str:
+        """Switch between the fixed threshold and the original's per-AIS rescale.
+
+        Deliberately does *not* re-analyse anything already on screen. Re-thresholding
+        re-segments the image, so every trace would have to be recomputed and every manual
+        edit on them thrown away -- and a curation session is hours of work that a toggle
+        must not be able to destroy. Instead the setting takes effect on the next analysis:
+        images not yet opened, and ``R`` on this one.
+
+        Clicks take effect immediately, because a click runs the loop itself -- which is the
+        one place this mode reproduces the original exactly.
+        """
+        value = str(value or "").strip()
+        if value not in RETHRESHOLD_MODES:
+            return f"{value!r} is not a threshold mode"
+        with self.lock:
+            if value == self.config.rethreshold:
+                return f"threshold mode already {value}"
+            self.config.rethreshold = value
+            stale = any(r.rethreshold != value for r in self.results.values())
+        if value == "original":
+            note = "threshold mode: original — each AIS re-thresholded from its own peak"
+        else:
+            note = "threshold mode: fixed — one Otsu threshold per image"
+        return note + (" (press R to re-analyse this image)" if stale else "")
 
     def set_skeleton_color(self, value: str) -> str:
         value = str(value or "").strip()
@@ -712,6 +782,8 @@ class Handler(BaseHTTPRequestHandler):
                 # One route, one setting per call: the page sends whichever control moved.
                 if "skeletonWidth" in body:
                     message = s.set_skeleton_width(body["skeletonWidth"])
+                elif "rethreshold" in body:
+                    message = s.set_rethreshold(body["rethreshold"])
                 else:
                     message = s.set_skeleton_color(body.get("skeletonColor", ""))
             elif path == "/api/undo":

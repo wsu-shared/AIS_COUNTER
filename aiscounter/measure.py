@@ -269,10 +269,13 @@ def measure_from_trace(
         # QUIRK 5: the original substitutes an x coordinate for an index here.
         ais_end = int(x_pix[-1])
         invalid = True
+        # The x coordinate is meaningless as an index whatever its size -- usually it is far
+        # past the end of the profile, but it can also land inside it (or before ais_start,
+        # giving a negative length). The wording must hold in every one of those cases.
         warnings.append(
             f"profile never exceeds f after its peak; the original falls back to an x "
-            f"coordinate ({ais_end}) in place of an index, which exceeds the {n} profile "
-            f"points and makes this length meaningless"
+            f"coordinate ({ais_end}) in place of an index into the {n} profile points, "
+            f"which makes this length meaningless"
         )
 
     before = np.flatnonzero((pix_narray < max_i) & (norm_lv < f))
