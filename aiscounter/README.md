@@ -22,10 +22,10 @@ optimistically, so they feel instant regardless.
 
 ## Install
 
-On a Mac there is nothing to do: **double-click `run.sh`**. It reads `.python-version`, has
-pyenv build that Python if it is missing, creates `.venv`, then asks you for a folder of images
-and opens the reviewer on it. Setup is skipped once `.venv` is good, so later runs start in
-about a second. See [Running it](#running-it).
+On a Mac there is nothing to do: **double-click `run.sh`**. It finds a Python you already have,
+creates `.venv`, installs the dependencies, then asks you for a folder of images and opens the
+reviewer on it. Setup is skipped once `.venv` is good, so later runs start in about a second.
+See [Running it](#running-it).
 
 By hand, on anything:
 
@@ -48,11 +48,21 @@ pip install -e .            # add ".[dev]" for pytest
 ./run.sh "example-images/TM" --auto       # anything after the folder goes to the CLI
 ```
 
-`run.sh` rebuilds `.venv` by itself when `.python-version` changes, when
-`aiscounter/requirements.txt` changes, or when the interpreter it was built against
-disappears — it records all three in `.venv/.aiscounter-setup` and compares on every run.
-Delete `.venv` to force a rebuild. It will not install pyenv for you: that is a decision about
-the whole machine, so it prints `brew install pyenv` and stops.
+`run.sh` picks the first CPython ≥ 3.10 it can find — `python3.12` first, since that is what
+this project has been run and validated on, then 3.11, 3.13 and 3.10 — looking on `PATH`, in
+Homebrew, in python.org's framework builds and in `~/.pyenv/versions`. It checks each one can
+actually build a venv before choosing it. Two overrides:
+
+```bash
+AISCOUNTER_PYTHON=/path/to/python3 ./run.sh   # use exactly this interpreter
+echo 3.12.4 > .python-version                 # pin a pyenv version (optional)
+```
+
+It rebuilds `.venv` by itself when the interpreter changes or disappears, and reinstalls when
+`aiscounter/requirements.txt` changes — it records the version, the interpreter path and a hash
+of the requirements in `.venv/.aiscounter-setup` and compares on every run. Delete `.venv` to
+force a rebuild. It installs nothing outside the project folder; if no Python new enough is on
+the machine it says how to get one and stops.
 
 Because the last thing it does is activate `.venv`, the same script is a fine place to add any
 other command you want run against the project's interpreter.

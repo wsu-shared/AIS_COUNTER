@@ -18,10 +18,11 @@ import numpy as np
 
 from .measure import PIXCONV, circularity
 
-# Drawn in matplotlib; a non-interactive backend is selected lazily in render_png so that
-# importing this module never hijacks the GUI's backend. The accepted-trace colour is
-# config.skeleton_color; these two stay fixed so that "rejected" and "landmark" keep meaning
-# the same thing whatever the user picks for the trace itself.
+# Drawn in matplotlib, which is imported lazily in render_png: it is the slowest import in the
+# project and nothing else here needs it, so a --batch --no-png run never pays for it.
+#
+# The accepted-trace colour is config.skeleton_color; these two stay fixed so that "rejected"
+# and "landmark" keep meaning the same thing whatever the user picks for the trace itself.
 EXCLUDED_COLOUR = "#FF5252"
 LABEL_COLOUR = "#FFEB3B"
 

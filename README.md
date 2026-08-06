@@ -12,14 +12,14 @@ validated against MATLAB R2024b.
 The reviewer opens in your browser. Click near the start of each AIS to measure it; press `?`
 in the browser for the rest of the keys.
 
-The first run sets everything up — it reads `.python-version`, has pyenv build that Python if
-it is missing, and creates a `.venv` — which takes a few minutes only if Python has to be
-compiled. Every run after that starts in about a second, because the setup is skipped once the
-`.venv` is good.
+The first run sets everything up — it finds a Python you already have, creates a `.venv` and
+installs the dependencies — which takes a few minutes, mostly downloading numpy and scipy.
+Every run after that starts in about a second, because the setup is skipped once the `.venv` is
+good.
 
-It needs **pyenv**. If you do not have it, `run.sh` says so and stops; install it with
-`brew install pyenv` and double-click again. It does not install pyenv for you, because that is
-a decision about your whole machine rather than about this project.
+All it needs is **Python 3.10 or newer** somewhere on the Mac; it looks on `PATH`, in Homebrew,
+in python.org's installs and in pyenv, and installs nothing outside this folder. If there is
+none, it says so and points at `brew install python@3.12`.
 
 > If double-clicking opens a text editor instead of running, right-click `run.sh` →
 > **Open With** → **Terminal**. Extracting a download also sets macOS's quarantine flag on the

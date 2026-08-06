@@ -258,7 +258,7 @@ def test_click_path_through_the_pipeline_matches_matlab(images, segmentation, n)
     """The user-facing click path (what `add_at` runs) must reproduce the original.
 
     ``run_click`` above exercises the primitives directly; this drives the cached, cropped
-    code path the GUI actually uses, so the optimisation is covered end to end.
+    code path the reviewer actually uses, so the optimisation is covered end to end.
     """
     from aiscounter.detect import trace_component
 

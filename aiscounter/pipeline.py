@@ -1,6 +1,6 @@
 """Orchestration: image in, a reviewable set of measured AIS out.
 
-``AnalysisResult`` is the object the GUI mutates and the reporter serialises. It holds the
+``AnalysisResult`` is the object the reviewer mutates and the reporter serialises. It holds the
 segmentation so that manual additions can be traced against exactly the same components the
 automatic pass used -- adding an AIS by hand runs the identical code path as the original's
 click, just without re-thresholding the image.
