@@ -1,4 +1,4 @@
-function [out] = ais_auto(cell, threshold, smooth, chosen)
+function [out] = ais_auto_refactored(cell, threshold, smooth, chosen)
 % AIS_AUTO - Automated detection and measurement of Axon Initial Segment
 %
 % Inputs:

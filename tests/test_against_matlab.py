@@ -104,7 +104,7 @@ def load_reference(n: int, prefix: str = "ref") -> dict:
     return json.loads((REFERENCE_DIR / f"{prefix}_{n}.json").read_text())
 
 
-def run_click(raw, seg, col: int, row: int, index: int = 1):
+def run_click(raw, seg, col: int, row: int, index: int = 1, length_mode: str = "profile"):
     """Reproduce the original's click -> component -> skeleton -> trace -> measure path."""
     label = seg.labels[row, col]
     if label == 0:
@@ -114,7 +114,9 @@ def run_click(raw, seg, col: int, row: int, index: int = 1):
     _, (ri, ci) = bwdist_indices(skeleton)
     seed = (int(ri[row, col]), int(ci[row, col]))
     trace = trace_skeleton(skeleton, *seed)
-    measurement = measure_from_trace(raw, trace.rows, trace.cols, index=index, seed_rc=seed)
+    measurement = measure_from_trace(
+        raw, trace.rows, trace.cols, index=index, seed_rc=seed, length_mode=length_mode
+    )
     return skeleton, trace, measurement
 
 
@@ -198,6 +200,37 @@ def test_lengths_match_matlab_exactly(images, segmentation):
         ref = load_reference(n)
         _, _, m = run_click(raw, segmentation, col, row, index=n)
         assert m.length_um == pytest.approx(ref["lngth"], abs=1e-9), f"click {n}"
+
+
+@pytest.mark.parametrize("mode", ["profile", "trace", "arclength", "max"])
+def test_the_originals_five_numbers_match_matlab_in_every_length_mode(
+    images, segmentation, mode
+):
+    """``length_mode`` chooses a headline; it must not disturb a single measurement.
+
+    ``ais_auto.m`` prints AIS Start, End, Mid, Max and Length for every AIS. All five are
+    asserted against MATLAB here whatever the reviewer happens to be displaying, so a mode
+    switch cannot quietly cost the report a column that used to be right.
+    """
+    raw, _ = images
+    for n, (col, row) in enumerate(CLICKS, start=1):
+        ref = load_reference(n)
+        _, _, m = run_click(raw, segmentation, col, row, index=n, length_mode=mode)
+
+        assert m.start_um == pytest.approx(ref["debut"], abs=1e-9), f"click {n}"
+        assert m.end_um == pytest.approx(ref["fin"], abs=1e-9), f"click {n}"
+        assert m.mid_um == pytest.approx(ref["mid"], abs=1e-9), f"click {n}"
+        assert m.max_um == pytest.approx(ref["maxi"], abs=1e-9), f"click {n}"
+        assert m.ais_length_um == pytest.approx(ref["lngth"], abs=1e-9), f"click {n}"
+
+
+def test_max_mode_reports_matlabs_ais_max(images, segmentation):
+    """The new mode, validated the same way as everything else: against R2024b's own output."""
+    raw, _ = images
+    for n, (col, row) in enumerate(CLICKS, start=1):
+        ref = load_reference(n)
+        _, _, m = run_click(raw, segmentation, col, row, index=n, length_mode="max")
+        assert m.length_um == pytest.approx(ref["maxi"], abs=1e-9), f"click {n}"
 
 
 # --- a second, independent image ----------------------------------------------------

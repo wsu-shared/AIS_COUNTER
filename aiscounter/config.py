@@ -10,7 +10,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .measure import F_FRACTION, PIXCONV, SPLINE_SMOOTH, circularity
+from .measure import (
+    F_FRACTION,
+    LENGTH_MODES,
+    PIXCONV,
+    SPLINE_SMOOTH,
+    circularity,
+    filter_length,
+)
+
+__all__ = ["AnalysisConfig", "LENGTH_MODES", "RETHRESHOLD_MODES"]
 
 RETHRESHOLD_MODES = ("fixed", "original")
 """The two ways of choosing the threshold each AIS is segmented at.
@@ -63,6 +72,39 @@ class AnalysisConfig:
     Costs about 0.15s per AIS -- the image is segmented again for each one. See
     ``docs/DIFFERENCES.md`` section 3.2 for why the original's rescale is not reproducible
     between people, which is the reason it is not the default.
+    """
+
+    length_mode: str = "profile"
+    """Which measurement is reported as the length; one of ``LENGTH_MODES``.
+
+    ``"profile"``   the original's **AIS Length**: the stretch between the two *f* crossings of
+                    the smoothed intensity profile, which is the AIS marker's extent and is
+                    usually a good deal shorter than the skeleton drawn through it. The
+                    default, because it is what ``ais_auto.m`` puts on the clipboard.
+    ``"trace"``     the whole skeleton, end to end, in the original's index convention
+                    (one pixel per profile sample, QUIRK 4).
+    ``"arclength"`` the whole skeleton, end to end, as true arc length along the fitted
+                    spline -- the length of the line drawn on screen.
+    ``"max"``       the original's **AIS Max**: the position of peak fluorescence along the
+                    axon. A position rather than a length, measured from wherever the walk
+                    started.
+
+    The original computes all five of its numbers (start, end, mid, max, length) whatever this
+    is set to, and all five reach the report; this only picks the headline. The two whole-trace
+    modes measure the *process* rather than the AIS marker along it, and ``"max"`` measures
+    neither -- so a figure has to say which mode produced it. Nothing else changes -- the same
+    walk, the same spline, the same profile -- so switching is safe on an image already
+    curated, and ``AnalysisResult.apply_length_mode`` does exactly that.
+
+    Two consequences worth knowing:
+
+    * Neither whole-trace mode can produce the original's meaningless lengths, because neither
+      reads ``ais_end``. Rows that ``drop_invalid`` would have thrown away for QUIRK 5 come
+      back with a real, geometric length -- a 2 um speck measures 2 um and is then rejected by
+      ``min_length_um`` like any other short trace. ``"max"`` is only spared QUIRK 5; its peak
+      comes off the profile, so QUIRK 6 still invalidates it.
+    * ``min_length_um``/``max_length_um`` judge a *length* even in ``"max"`` mode, where the
+      headline is a position -- see ``measure.filter_length``.
     """
 
     # --- automation-only knobs ----------------------------------------------------
@@ -136,6 +178,10 @@ class AnalysisConfig:
             raise ValueError(
                 f"rethreshold must be one of {RETHRESHOLD_MODES}, got {self.rethreshold!r}"
             )
+        if self.length_mode not in LENGTH_MODES:
+            raise ValueError(
+                f"length_mode must be one of {LENGTH_MODES}, got {self.length_mode!r}"
+            )
 
     def accepts(self, measurement) -> bool:
         """Whether an automatically detected AIS is plausible enough to keep.
@@ -150,9 +196,12 @@ class AnalysisConfig:
             return False
         if self.drop_warned and measurement.warnings:
             return False
-        if self.min_length_um is not None and measurement.length_um < self.min_length_um:
+        # A length, never the headline number blindly: in "max" mode that is a position, and
+        # judging it would reject good AIS for where their peak sits. See measure.filter_length.
+        length = filter_length(measurement)
+        if self.min_length_um is not None and length < self.min_length_um:
             return False
-        if self.max_length_um is not None and measurement.length_um > self.max_length_um:
+        if self.max_length_um is not None and length > self.max_length_um:
             return False
         if self.max_circularity < 1.0 and circularity(measurement) > self.max_circularity:
             return False

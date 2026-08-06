@@ -17,7 +17,7 @@ QUIRK 4 -- ``axon_um`` is index-based, not arc-length.
     even when the spline moves diagonally. The script computes a true arc length
     (``ax_um``/``saxon_um``) but never uses it for the reported numbers. The faithful
     length uses the index convention; ``arclength_um`` exposes the unused-but-more-
-    accurate figure alongside it.
+    accurate figure alongside it, and ``length_mode="arclength"`` reports it.
 
 QUIRK 5 -- the ``ais_end`` fallback returns a coordinate, not an index.
     When the profile never rises above *f* after its peak, the original falls back to
@@ -49,17 +49,51 @@ PIXCONV = 0.161  # microns per pixel (ais_auto.m line 5)
 F_FRACTION = 0.33  # Grubb & Burrone 2010 (ais_auto.m line 6)
 SPLINE_SMOOTH = 0.3  # csaps p parameter (ais_auto.m line 272)
 
+LENGTH_MODES = ("profile", "trace", "arclength", "max")
+"""Which measurement of a trace is reported as ``length_um``.
+
+``ais_auto.m`` prints five numbers for every AIS -- *AIS Start*, *End*, *Mid*, *Max* and
+*Length* (lines 498-502) -- and copies only the length to the clipboard. All five are always
+computed here and all five always reach the report; this setting picks which one is the
+*headline*: drawn on the image, listed in the sidebar, and averaged into the statistics.
+
+``"profile"``   the original's **AIS Length**: only the stretch of the trace whose smoothed
+                intensity stays above *f*, from the last sample below *f* before the peak to
+                the last one above it after (``fin - debut``). The AIS proper, which is a
+                *brightness* landmark rather than a geometric one, so the drawn skeleton
+                usually runs well past both ends of the reported number.
+``"trace"``     the whole skeleton, end to end, counted the way the original counts distance
+                along an axon: one pixel per profile sample (QUIRK 4), i.e. ``N*pixconv``.
+                Those samples are the *rounded* spline, which crosses one axis boundary at a
+                time, so the count follows a staircase and comes out longer than the line it
+                is counting -- 8 to 32 percent longer across the 29 traces of one example
+                image, and up to sqrt(2) in the limit. Equal only on an axis-aligned run.
+``"arclength"`` the whole skeleton, end to end, as true spline arc length -- the length of
+                the line actually drawn on screen, and the figure the original computes as
+                ``ax_um`` and then never uses.
+``"max"``       the original's **AIS Max**: ``maxi = max_x*pixconv``, the position of peak
+                fluorescence along the axon. A *position*, not a length -- measured from
+                wherever the walk started, so it is the one mode whose number depends on which
+                end of the trace was seeded (``docs/DIFFERENCES.md`` 3.1). It is a real
+                measurement of the original's and is reported exactly as the original reports
+                it; it is simply not comparable with the other three.
+
+Only ``"profile"`` reproduces what ``ais_auto.m`` puts on the clipboard. The middle two answer
+a different question -- "how long is this process?" rather than "how far does the AIS marker
+extend?" -- and ``"max"`` answers a third. See ``docs/DIFFERENCES.md`` 3.8.
+"""
+
 
 @dataclass
 class AISMeasurement:
     """Per-AIS results, in the vocabulary the original prints."""
 
     index: int
-    start_um: float           # debut
-    end_um: float             # fin
-    mid_um: float             # mid
-    max_um: float             # maxi
-    length_um: float          # lngth  <- the headline number
+    start_um: float           # debut  \
+    end_um: float             # fin     |  the original's five, always, whatever length_mode
+    mid_um: float             # mid     |  says: they are measurements of the trace, not a
+    max_um: float             # maxi   /   choice of what to report
+    length_um: float          # <- the headline number; which measurement it holds is length_mode
     arclength_um: float       # true spline arc length (original computes, never uses)
     n_profile_points: int
     seed_rc: tuple
@@ -72,6 +106,20 @@ class AISMeasurement:
     ais_start_idx: int = 0
     ais_end_idx: int = 0
     max_idx: int = 0
+
+    length_mode: str = "profile"
+    """Which measurement ``length_um`` holds; one of ``LENGTH_MODES``.
+
+    Carried on the measurement rather than left to the config, because a number is not
+    interpretable without it and the config can be changed after the fact. It is also what
+    lets ``AnalysisResult.apply_length_mode`` tell which records still need re-measuring.
+
+    ``ais_start_idx`` and ``ais_end_idx`` bracket whatever this mode reports, so the markers
+    drawn on the trace always sit at the two ends of the number beside it: the *f* crossings
+    in ``"profile"``, the ends of the trace in ``"trace"`` and ``"arclength"``, and the trace
+    start to the peak in ``"max"``. Nothing else moves -- ``start_um``/``end_um``/``mid_um``/
+    ``max_um`` are the original's own measurements and are the same in every mode.
+    """
     trace_rows: np.ndarray = field(default=None, repr=False)
     trace_cols: np.ndarray = field(default=None, repr=False)
     """The ordered skeleton walk this measurement was built from (Xais/Yais).
@@ -99,6 +147,38 @@ class AISMeasurement:
     the first is often the harmless border-clamp note, which would otherwise be given as the
     reason a row was thrown away.
     """
+
+    @property
+    def ais_length_um(self) -> float:
+        """The original's ``lngth``, in every mode: the AIS between the two *f* crossings."""
+        return float(self.end_um - self.start_um)
+
+    @property
+    def trace_length_um(self) -> float:
+        """The whole walk in the original's pixel-step convention, in every mode.
+
+        ``profile_um`` is ``(1:N)*pixconv``, so its last entry is the length ``"trace"`` mode
+        reports. Derived rather than stored: it is the same number by construction, and two
+        copies of it could disagree.
+        """
+        return float(self.profile_um[-1]) if self.profile_um.size else 0.0
+
+
+def filter_length(measurement: AISMeasurement) -> float:
+    """The length ``min_length_um`` and ``max_length_um`` judge, whatever is being reported.
+
+    A filter called "minimum AIS length" has to compare against a length. In three of the four
+    modes the headline number is one, so it is used directly and the sliders mean exactly what
+    is on screen. ``"max"`` reports a *position*, and judging that would throw away precisely
+    the traces the mode exists to measure: a perfectly good AIS whose brightest point sits near
+    where the walk started reads 0.16 um, and 7 of 23 traces on one example image fall under
+    the default 5 um floor for no reason but where their peak happens to be. The whole-trace
+    length stands in there -- it is geometry, always defined, and rejecting specks of debris is
+    what the filter is for.
+    """
+    if measurement.length_mode == "max":
+        return measurement.trace_length_um
+    return float(measurement.length_um)
 
 
 def circularity(measurement: AISMeasurement) -> float:
@@ -137,7 +217,12 @@ def matlab_colon(start: float, step: float, stop: float) -> np.ndarray:
     return v
 
 
-def fit_spline(rows: np.ndarray, cols: np.ndarray, smooth: float = SPLINE_SMOOTH):
+def fit_spline(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    smooth: float = SPLINE_SMOOTH,
+    pixconv: float = PIXCONV,
+):
     """The original's csaps fit (ais_auto.m lines 266-278).
 
     ``xy = [Yais; Xais]`` puts columns (x) on row 1 and rows (y) on row 2. The sample
@@ -163,7 +248,10 @@ def fit_spline(rows: np.ndarray, cols: np.ndarray, smooth: float = SPLINE_SMOOTH
     xysm_1 = csaps(t, xy, ts, smooth=smooth)
 
     steps = np.hypot(np.diff(xysm_1[0]), np.diff(xysm_1[1]))
-    arclength_um = float(np.sum(steps) * PIXCONV)  # shift-invariant
+    # *pixconv*, not the module constant: with length_mode="arclength" this is the reported
+    # length, and an image whose own calibration differs from 0.161 would otherwise be
+    # measured in someone else's microns.
+    arclength_um = float(np.sum(steps) * pixconv)  # shift-invariant
 
     xys = matlab_round(xysm_1) - 1.0  # round exactly where MATLAB rounds, then rebase
     return xysm_1 - 1.0, xys, arclength_um
@@ -284,13 +372,32 @@ def measure_from_trace(
     pixconv: float = PIXCONV,
     f: float = F_FRACTION,
     smooth: float = SPLINE_SMOOTH,
+    length_mode: str = "profile",
 ) -> AISMeasurement:
-    """Turn one ordered skeleton walk into AIS measurements, following the original."""
+    """Turn one ordered skeleton walk into AIS measurements, following the original.
+
+    Everything the original computes is computed here in every case -- the spline, the
+    intensity profile, the peak, the two *f* crossings, and the five numbers it prints
+    (``start_um``, ``end_um``, ``mid_um``, ``max_um`` and the AIS length). *length_mode* only
+    chooses which measurement is copied into ``length_um``, the number the reviewer draws and
+    the statistics average; see ``LENGTH_MODES``.
+    """
+    if length_mode not in LENGTH_MODES:
+        # Never silently: an unrecognised mode falling through to the original's arithmetic
+        # would produce plausible numbers that answer a question nobody asked.
+        raise ValueError(f"length_mode must be one of {LENGTH_MODES}, got {length_mode!r}")
+
     warnings: list = []
     invalid = False
     invalid_reason = ""
 
-    xysm, xys, arclength_um = fit_spline(rows, cols, smooth=smooth)
+    # Which of the original's failures can reach the number being reported. Both quirks are
+    # still recorded as warnings in every mode -- they are facts about the trace -- but a mode
+    # is only invalidated by the arithmetic it actually reads.
+    from_geometry = length_mode in ("trace", "arclength")  # reads no intensity at all
+    reads_ais_end = length_mode == "profile"               # the only mode quirk 5 can spoil
+
+    xysm, xys, arclength_um = fit_spline(rows, cols, smooth=smooth, pixconv=pixconv)
     x_pix, y_pix = unique_pixels(xys)
 
     h, w = raw.shape
@@ -301,17 +408,24 @@ def measure_from_trace(
     floor_n = min_profile_points(pixconv)
     if n < floor_n:
         # QUIRK 6: below this the original does not measure the trace badly, it stops. Nothing
-        # downstream is trustworthy, so the row is invalidated here rather than after the
-        # length has been computed -- a short profile also tends to put the peak on its last
-        # sample, which then trips the QUIRK 5 fallback and turns a 2 um speck into a length
-        # in the tens of microns. That is what "89 um dot" looks like from the inside.
-        invalid = True
-        invalid_reason = (
+        # the profile feeds is trustworthy, so the row is invalidated here rather than after
+        # the length has been computed -- a short profile also tends to put the peak on its
+        # last sample, which then trips the QUIRK 5 fallback and turns a 2 um speck into a
+        # length in the tens of microns. That is what "89 um dot" looks like from the inside.
+        short_profile = (
             f"{n} profile points, fewer than the {floor_n} the original's sliding mean "
             f"indexes: MATLAB raises \"Index exceeds the number of array elements\" here, so "
             f"this trace has no length in the original at all"
         )
-        warnings.append(invalid_reason)
+        warnings.append(short_profile)
+        # Still worth saying in the whole-trace modes -- it is a fact about the trace -- but
+        # not disqualifying there: those lengths are read off the geometry, so a profile the
+        # sliding mean cannot index costs them nothing. A 2 um speck then reports 2 um rather
+        # than the 89 um the quirk 5 fallback turns it into, and the length filter takes it.
+        # "max" is not among them: the peak position comes off this very profile.
+        if not from_geometry:
+            invalid = True
+            invalid_reason = short_profile
 
     _, lv_smooth = intensity_profile(raw, x_pix, y_pix)
     lv_ss = sliding_mean(lv_smooth, pixconv=pixconv)
@@ -336,7 +450,6 @@ def measure_from_trace(
         # Without this the reported length is short by exactly one pixconv, which is small
         # enough to look like rounding and is the only place the port drifted from MATLAB.
         ais_end = int(x_pix[-1]) + 1
-        invalid = True
         # The x coordinate is meaningless as an index whatever its size -- usually it is far
         # past the end of the profile, but it can also land inside it (or before ais_start,
         # giving a negative length). The wording must hold in every one of those cases.
@@ -346,9 +459,14 @@ def measure_from_trace(
             f"which makes this length meaningless"
         )
         warnings.append(message)
-        # Only when nothing has invalidated the row yet: a profile too short to measure at all
-        # is the root cause of this fallback when both fire, and is the more useful reason.
-        invalid_reason = invalid_reason or message
+        # The bug is in the *end of the AIS*, so it only reaches the reported number in the
+        # mode that reports that end. Nothing else here reads ais_end -- not even "max",
+        # whose peak is found before this line runs.
+        if reads_ais_end:
+            invalid = True
+            # Only when nothing has invalidated the row yet: a profile too short to measure at
+            # all is the root cause of this fallback when both fire, and the more useful reason.
+            invalid_reason = invalid_reason or message
 
     before = np.flatnonzero((pix_narray < max_i) & (norm_lv < f))
     if before.size > 0:
@@ -357,13 +475,32 @@ def measure_from_trace(
         ais_start = 0
         warnings.append("profile never drops below f before its peak; ais_start clamped to 0")
 
-    debut = ais_start * pixconv
-    fin = ais_end * pixconv
-    lngth = fin - debut
-    mid = float(np.mean([debut, fin]))
-    maxi = max_x * pixconv
+    # The original's five, exactly as ais_auto.m lines 451-455 compute them. They are
+    # measurements of the trace, not a choice of what to look at, so they are the same in every
+    # mode and every one of them reaches the report.
+    debut = ais_start * pixconv   # AIS Start
+    fin = ais_end * pixconv       # AIS End
+    mid = float(np.mean([debut, fin]))  # AIS Mid
+    maxi = max_x * pixconv        # AIS Max -- a position along the axon, not a length
+    lngth = fin - debut           # AIS Length
 
-    if lngth <= 0:
+    # Which of them (or which whole-trace length) is the headline, and the two profile indices
+    # bracketing it so that the markers drawn on the trace enclose the number beside it. The
+    # whole-trace modes span index 0 to N -- the same bracket the original's own ais_start
+    # clamp uses at its low end.
+    if length_mode == "trace":
+        reported, start_idx, end_idx = n * pixconv, 0, n
+    elif length_mode == "arclength":
+        reported, start_idx, end_idx = arclength_um, 0, n
+    elif length_mode == "max":
+        # From the start of the walk to the peak, which is what `maxi` measures.
+        reported, start_idx, end_idx = maxi, 0, max_i
+    else:
+        reported, start_idx, end_idx = lngth, ais_start, ais_end
+
+    if reported <= 0:
+        # Only reachable in "profile" mode, where it is quirk 5 turning the length negative;
+        # the other three are distances along a trace that exists, so they are positive.
         warnings.append("non-positive length")
         invalid = True
         invalid_reason = invalid_reason or "non-positive length"
@@ -374,7 +511,7 @@ def measure_from_trace(
         end_um=float(fin),
         mid_um=float(mid),
         max_um=float(maxi),
-        length_um=float(lngth),
+        length_um=float(reported),
         arclength_um=float(arclength_um),
         n_profile_points=int(n),
         seed_rc=seed_rc,
@@ -384,9 +521,10 @@ def measure_from_trace(
         spline_y=xysm[1],
         profile_norm=norm_lv,
         profile_um=axon_um,
-        ais_start_idx=ais_start,
-        ais_end_idx=ais_end,
+        ais_start_idx=start_idx,
+        ais_end_idx=end_idx,
         max_idx=max_i,
+        length_mode=length_mode,
         trace_rows=np.asarray(rows, dtype=np.int64),
         trace_cols=np.asarray(cols, dtype=np.int64),
         warnings=warnings,

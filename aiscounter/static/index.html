@@ -79,6 +79,9 @@
 
   <aside id="sidebar">
     <div id="stats" class="stats"></div>
+    <!-- The file these numbers came from, in full. Image names repeat between folders, and
+         the top bar only has room for the last one. Click copies it. -->
+    <div id="imgpath" class="path" title="click to copy the full path"></div>
     <div id="warnbox"></div>
 
     <div id="controls" class="controls">
@@ -100,13 +103,26 @@
       </label>
       <label class="ctl">
         <span class="ctlhead">
+          <span>length measures</span>
+        </span>
+        <select id="lengthmode"
+                title="Which measurement is reported for each AIS. All of the original's numbers — AIS start, end, mid, max and length — are always computed and always reach the report; this picks the one drawn on the image and averaged in the statistics.&#10;AIS length (f crossings): the original's clipboard number — only the stretch whose smoothed intensity stays above f. A brightness landmark, not a geometric one, so the drawn skeleton normally runs well past both markers.&#10;whole trace (pixel steps): the entire skeleton, end to end, counted the original's way — one pixel per profile sample. Those pixels form a staircase around the line, so this reads about a tenth longer than the line itself on a typical trace, and up to 41% on a diagonal.&#10;whole trace (arc length): the entire skeleton measured along the drawn spline — the length of the line you can see, without the staircase.&#10;AIS max (peak position): the original's AIS Max — how far along the axon fluorescence peaks. A position, not a length, measured from where the trace starts, so it depends on which end the walk was seeded at. The min/max length filters keep judging the whole trace in this mode.&#10;Switching re-measures every image already open. No trace moves and no edit is lost — only which number is shown.">
+          <option value="profile">AIS length &mdash; f crossings (ais_auto.m)</option>
+          <option value="trace">whole trace &mdash; pixel steps</option>
+          <option value="arclength">whole trace &mdash; arc length</option>
+          <option value="max">AIS max &mdash; peak position (ais_auto.m)</option>
+        </select>
+        <span id="lengthnote" class="ctlnote"></span>
+      </label>
+      <label class="ctl">
+        <span class="ctlhead">
           <span>threshold</span>
           <output id="threshval"></output>
         </span>
         <select id="rethreshold"
-                title="fixed: one Otsu threshold for the whole image, the same for every AIS — reproducible, and the default.&#10;original: reproduce ais_auto.m's rethreshold loop — each AIS is measured at its own threshold, scaled down by its own peak brightness (max_ais/max_all), which segments the image again for every AIS.&#10;Switching does not re-analyse what is already on screen: press R for that. Clicks use the new mode straight away.">
-          <option value="fixed">fixed &mdash; one Otsu threshold per image</option>
+                title="original: reproduce ais_auto.m's rethreshold loop — each AIS is measured at its own threshold, scaled down by its own peak brightness (max_ais/max_all), which segments the image again for every AIS. This is what the app starts in, and it fires for every AIS but the one holding the image's brightest pixel.&#10;fixed: one Otsu threshold for the whole image, the same for every AIS — more reproducible, but not what a hand-run session does.&#10;Switching does not re-analyse what is already on screen: press R for that. Clicks use the new mode straight away.">
           <option value="original">original &mdash; rescale per AIS (ais_auto.m)</option>
+          <option value="fixed">fixed &mdash; one Otsu threshold per image</option>
         </select>
         <span id="threshnote" class="ctlnote"></span>
       </label>
@@ -127,7 +143,7 @@
     <div id="autosave" class="autosave"></div>
 
     <div class="listhead">
-      <span>AIS</span><span>length</span>
+      <span>AIS</span><span id="listheadvalue">length</span>
     </div>
     <ul id="list"></ul>
   </aside>

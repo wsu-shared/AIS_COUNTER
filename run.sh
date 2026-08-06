@@ -56,6 +56,7 @@ trap on_exit EXIT
 
 # ------------------------------------------------------------------------------ where we are
 
+
 # Finder starts the script with the working directory set to your home folder, not to the
 # project, so this is what makes aiscounter/ resolvable at all.
 SOURCE="${BASH_SOURCE[0]}"
@@ -76,6 +77,17 @@ if [ ! -f "$REQUIREMENTS" ]; then
     warn "This script has to sit next to the aiscounter/ folder it launches."
     exit 1
 fi
+
+PROJECT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+cd "$PROJECT"
+
+# --- NEW CHECK START ---
+if [ -n "${VIRTUAL_ENV:-}" ]; then
+    warn "A virtual environment is already active: $VIRTUAL_ENV"
+    warn "Please run 'deactivate' in your terminal and try again."
+    exit 1
+fi
+# --- NEW CHECK END ---
 
 # Everything unzipped from a download carries com.apple.quarantine, which makes macOS second
 # guess the scripts and dylibs inside it. Cleared for this folder only, and said out loud
@@ -262,9 +274,6 @@ if [ "$install_requirements" -eq 1 ]; then
     printf '%s\n%s\n%s\n' "$PY_VERSION" "$PY_BIN" "$REQ_HASH" > "$STAMP"
     say
     say "${GREEN}Setup complete.${OFF}"
-    say
-else
-    note "environment ready -- delete .venv to force a rebuild"
 fi
 
 # This is the "hooked in" part: from here `python` is the project's interpreter, so anything

@@ -1,0 +1,1 @@
+ais_auto( '/Users/morpheous/WORKSPACE/PROJECTS/AIS_COUNTER/example-images/004-processed-tiff/446-4057-176_b0c0x0-1388y0-1040_ORG' , 0.01 , 'gaussian' , 0 )

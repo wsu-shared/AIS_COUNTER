@@ -295,6 +295,95 @@ Two consequences worth stating plainly:
   including the lengths the original gets wrong: the 21-point trace in the fixture reports
   97.888 µm in both. Across ten example images the automatic pass loses no AIS to this change.
 
+### 3.8 Which measurement is reported is now a setting
+
+The original computes five numbers per AIS and prints all of them (lines 498–502), then copies
+exactly one to the clipboard:
+
+```matlab
+debut = ais_start*pixconv;   %%%% AIS start position in Ch1, in um
+fin   = ais_end*pixconv;     %%%% AIS end position
+mid   = mean([debut fin]);   %%%% AIS mid position
+maxi  = max_x*pixconv;       %%%% AIS max position -- where fluorescence peaks
+lngth = fin-debut;           %%%% AIS length
+...
+clipboard('copy',num2str(lngth,6));
+```
+
+**All five are computed here in every case and all five reach the report**, in the
+`start_um`, `end_um`, `mid_um`, `max_um` and `ais_length_um` columns; `length_mode` only
+decides which one is the *headline* — drawn on the image, listed in the sidebar, averaged into
+the statistics, and copied into `length_um`. That the setting cannot disturb the other four is
+asserted against MATLAB in every mode
+(`test_the_originals_five_numbers_match_matlab_in_every_length_mode`).
+
+The original's length is not the length of the trace. It is
+
+```matlab
+ais_end   = find(pix_narray > max_x & norm_lv > f, 1, 'last');   % last sample above f
+ais_start = find(pix_narray < max_x & norm_lv < f, 1, 'last');   % last sample below f
+lngth     = ais_end*pixconv - ais_start*pixconv;
+```
+
+— the stretch of the trace whose *smoothed intensity* stays above `f` (0.33 of the peak, Grubb
+& Burrone 2010). That is the AIS marker's extent, a brightness landmark, and it says nothing
+about where the skeleton ends. On a typical trace it covers well under half of it, which is why
+the two yellow markers sit in the middle of a magenta line running past both of them. Nothing
+on screen used to say so, and "the length is only measured between the circles" is the correct
+reading of what was drawn.
+
+`config.length_mode` (`--length-mode`, and the **length measures** selector in the reviewer)
+picks the headline:
+
+| mode | reports | is it the original's? |
+|---|---|---|
+| `profile` *(default)* | **AIS Length** — `ais_end - ais_start`, above | yes: the number on the clipboard |
+| `trace` | the whole skeleton, `N*pixconv` — one pixel per profile sample | no |
+| `arclength` | the whole skeleton along the fitted spline (`ax_um`, which the original computes and never uses) | no |
+| `max` | **AIS Max** — `maxi`, where fluorescence peaks along the axon | yes: the original's own `maxi`, matched to 1e-9 against R2024b |
+
+`max` is a **position, not a length**, measured from wherever the walk started — so it is the
+one mode whose number changes if the same trace is seeded from the other end (3.1). The
+original has that property too: `max_x` indexes a profile that begins where you clicked, which
+is why `ais_auto.m` tells you to click near the AIS start. Two consequences of it being a
+position rather than a length:
+
+* **The length sliders keep judging a length.** `min_length_um`/`max_length_um` compare against
+  the whole-trace length in this mode (`measure.filter_length`), because a good AIS whose
+  brightest point sits near where the walk began reads 0.16 µm — 7 of 23 traces on one example
+  image fall under the default 5 µm floor for no reason but where their peak is. The rejection
+  reason says `trace length …` there, so the number quoted is one the user can find.
+* **The sidebar column is renamed** to *AIS max*, and the PNG title carries
+  `[reported: AIS max position, not a length]`.
+
+`trace` keeps quirk 4's convention: it counts the pixels the rounded spline passes through.
+Those cross one axis boundary at a time, so the count traces a **staircase** around the line
+and comes out *longer* than it — 1.08–1.32× the arc length across the 29 traces of
+`005-both-tiff/534-23035…`, and √2 in the limit; equal only on an axis-aligned run. `arclength`
+measures the line itself. Neither is a *better estimate of the same quantity* as `profile` —
+they answer "how long is this process?" rather than "how far does the AIS marker
+extend?" — so a figure has to say which it used. Every export does: `length_mode` sits beside
+`length_um` in the per-AIS table, in the summary sheet, and on the PNG title whenever it is not
+the original's.
+
+Two more consequences:
+
+* **The markers follow the number.** `ais_start_idx`/`ais_end_idx` bracket whatever is being
+  reported: the *f* crossings in `profile`, the two ends of the trace in `trace`/`arclength`,
+  and the trace start to the peak in `max`. Whatever is drawn always encloses the number
+  printed beside it.
+* **A mode is only invalidated by arithmetic it actually reads.** Quirk 5 is about `ais_end`,
+  which only `profile` reports, so a 14-point speck measures its own 2 µm in the other three
+  instead of the 89 µm the fallback invents (3.7), and is then rejected by `min_length_um` like
+  any other short trace. Quirk 6 is different: `trace` and `arclength` are pure geometry and
+  survive it, but `max` reads the very profile MATLAB cannot index, so it stays `invalid`
+  there. Every row keeps all of its warnings in every mode; only the `invalid` flag moves.
+
+Switching mode in the reviewer re-measures every image already open, from the walk each record
+already holds. Unlike the rethreshold switch (3.2) nothing is re-segmented or re-traced, so
+joins, splices, manual adds and deletions all survive it, and switching back reproduces the
+previous numbers exactly (`tests/test_length_mode.py`).
+
 ## 4. What test-2 was doing
 
 `test-2-FijiAutoCellCounter` is not a port of this algorithm at all. It runs Fiji's

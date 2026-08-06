@@ -199,6 +199,17 @@ main { display: flex; height: calc(100% - 48px - 2px - 26px); }
 .stat .k { color: var(--dim); font-size: 10px; text-transform: uppercase; letter-spacing: .5px; }
 .stat .v { font-size: 15px; font-variant-numeric: tabular-nums; }
 
+/* The source file, in full. Broken across lines rather than ellipsised: a path is only worth
+   showing if it can be read to the end, and the last components are the ones that identify
+   the image. Quiet by default, legible on hover, copied on click. */
+.path {
+  padding: 7px 12px; border-bottom: 1px solid var(--line);
+  color: var(--dim); font: 10px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-all; cursor: copy; user-select: text;
+}
+.path:hover { color: var(--text); background: var(--panel-2); }
+.path:empty { display: none; }
+
 #warnbox:empty { display: none; }
 .warn {
   margin: 8px; padding: 7px 9px; border-radius: 6px;

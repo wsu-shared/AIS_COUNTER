@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+import socket
+import struct
 import threading
+import time
+import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
 
 import numpy as np
 import pytest
 import tifffile
 
 from aiscounter.config import AnalysisConfig
-from aiscounter.webapp import Handler, Session
+from aiscounter.webapp import Handler, QuietHTTPServer, Session
 
 
 def _two_ais_image():
@@ -154,7 +157,9 @@ def test_a_stalled_subscriber_does_not_block_publishing(session):
 @pytest.fixture
 def server(session):
     Handler.session = session
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    # The same class serve() uses, so these tests exercise the real error handling rather than
+    # a plain ThreadingHTTPServer that happens to behave differently when a client vanishes.
+    httpd = QuietHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     yield f"http://127.0.0.1:{httpd.server_port}"
@@ -248,6 +253,53 @@ def test_http_circularity_route_filters(server):
 
     res = _post(server, "/api/max-circularity", {"index": 0, "value": 1.0})
     assert res["stats"]["n"] == before
+
+
+# --- clients that vanish --------------------------------------------------------------
+#
+# The console belongs to the analysis. A browser dropping a connection is routine -- a reload,
+# a closed tab, an abandoned image request, an idle keep-alive socket -- and socketserver's
+# default is to print a full traceback for each one, which buries the messages that matter.
+
+
+def test_handle_error_swallows_hang_ups_but_not_real_faults(capsys):
+    """The hook itself, without a socket: only the hang-up family may be silent."""
+    server = QuietHTTPServer.__new__(QuietHTTPServer)  # handle_error touches no state
+    client = ("127.0.0.1", 53745)
+
+    try:
+        raise ConnectionResetError(54, "Connection reset by peer")
+    except ConnectionResetError:
+        server.handle_error(None, client)
+    assert capsys.readouterr().err == ""
+
+    try:
+        raise ValueError("a real bug in a handler")
+    except ValueError:
+        server.handle_error(None, client)
+    assert "a real bug in a handler" in capsys.readouterr().err
+
+
+def test_a_client_hanging_up_prints_nothing_and_breaks_nothing(server, capsys):
+    """The reported case, end to end: a keep-alive connection reset instead of closed.
+
+    ``SO_LINGER`` with a zero timeout makes ``close`` send an RST, which is what a browser
+    discarding a pooled connection does and what the server's ``readline`` was reporting as
+    *[Errno 54] Connection reset by peer*.
+    """
+    url = urllib.parse.urlparse(server)
+    sock = socket.create_connection((url.hostname, url.port), timeout=5)
+    sock.sendall(b"GET /api/state HTTP/1.1\r\nHost: localhost\r\n\r\n")
+    sock.recv(64)                       # response under way; the socket then goes idle
+    time.sleep(0.2)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    sock.close()
+    time.sleep(0.4)                     # long enough for the handler thread to notice
+
+    assert capsys.readouterr().err == ""
+    # And the server is still the server: one dead connection must not take a thread, the
+    # session or the socket with it.
+    assert json.loads(_get(server, "/api/state")[1])["stats"]["n"] >= 1
 
 
 def test_http_splice_accepts_an_explicit_uid(server):

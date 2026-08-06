@@ -25,6 +25,7 @@ import io
 import json
 import queue
 import re
+import sys
 import threading
 import webbrowser
 from dataclasses import dataclass
@@ -33,9 +34,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import RETHRESHOLD_MODES, AnalysisConfig
+from .config import LENGTH_MODES, RETHRESHOLD_MODES, AnalysisConfig
 from .imaging import find_images
-from .measure import circularity
+from .measure import circularity, filter_length
 from .pipeline import analyse_image
 from .report import write_csv, write_report, write_xlsx
 
@@ -64,6 +65,35 @@ a dozen mutations in a few seconds, and rewriting the whole table each time woul
 synchronous file write in the middle of an interaction that is meant to feel instant."""
 
 _COLOUR_RE = re.compile(r"^(#[0-9a-fA-F]{3,8}|[a-zA-Z]{3,24})$")
+
+LENGTH_MODE_NOTES = {
+    "profile": "the AIS proper: the stretch of the trace whose intensity stays above f "
+               "(ais_auto.m's AIS Length). The markers show where it starts and ends, and "
+               "the skeleton usually runs past both.",
+    "trace": "the whole skeleton, end to end, counted the original's way — one pixel per "
+             "profile sample. The count follows a staircase, so it runs a little longer "
+             "than the line itself except on a straight horizontal or vertical trace.",
+    "arclength": "the whole skeleton, end to end, measured along the drawn spline: the "
+                 "length of the line you can see, without the staircase.",
+    "max": "ais_auto.m's AIS Max: how far along the axon fluorescence peaks. A position, "
+           "not a length — measured from where the trace starts, so it depends on which "
+           "end was seeded. The length sliders still judge the whole trace.",
+}
+"""What each mode reports, for the panel under the selector.
+
+The distinction the first line draws is the one this setting exists for: the original's length
+is an *intensity* landmark, so it is routinely much shorter than the trace it is drawn on, and
+nothing on screen said so."""
+
+LENGTH_MODE_COLUMNS = {
+    "profile": "length",
+    "trace": "trace length",
+    "arclength": "arc length",
+    "max": "AIS max",
+}
+"""Heading for the sidebar's number column.
+
+Cheap, and it stops a column of peak positions sitting under the word "length"."""
 
 
 def _valid_colour(value: str) -> bool:
@@ -303,7 +333,15 @@ class Session:
             "index": record.index,
             "label": record.label,
             "length": round(m.length_um, 2),
+            "lengthMode": m.length_mode,
+            # Every measurement the original makes, on every row, whatever the headline is:
+            # the sidebar offers them on hover, so "why is the number shorter than the line?"
+            # and "what was the AIS length again?" are answerable without switching mode and
+            # re-measuring the image to find out.
+            "aisLength": round(m.ais_length_um, 2),
+            "traceLength": round(m.trace_length_um, 2),
             "arclength": round(m.arclength_um, 2),
+            "maxPosition": round(m.max_um, 2),
             "circularity": round(circularity(m), 3),
             "excluded": record.excluded,
             "reason": record.reason,
@@ -344,12 +382,23 @@ class Session:
             # used as an index (QUIRK 5), which on a real image reaches 222 um against a true
             # maximum of 35, and calibrating the slider to a number that is not a length
             # would leave the whole useful range inside its first few pixels of travel.
+            #
+            # Scaled to what the slider actually filters, which in "max" mode is not the number
+            # on screen: a ceiling taken from peak positions would not reach the trace lengths
+            # being judged.
             longest = max(
-                (r.length_um for r in result.records if not r.measurement.invalid), default=0.0
+                (filter_length(r.measurement) for r in result.records
+                 if not r.measurement.invalid),
+                default=0.0,
             )
             return {
                 "image": {
                     "name": result.image.name,
+                    # The file on disk these numbers came from. Two folders of images can hold
+                    # the same file names, and the top bar's name alone cannot tell you which
+                    # one you are looking at -- which matters most at the moment you write a
+                    # number down.
+                    "path": str(Path(result.image.path).resolve()),
                     "index": index,
                     "total": len(self.paths),
                     "width": int(result.image.raw.shape[1]),
@@ -365,6 +414,14 @@ class Session:
                     "maxCircularity": round(float(self.config.max_circularity), 2),
                     "skeletonColor": self.config.skeleton_color,
                     "skeletonWidth": round(float(self.config.skeleton_width), 1),
+                    "lengthMode": self.config.length_mode,
+                    "lengthModeNote": LENGTH_MODE_NOTES.get(self.config.length_mode, ""),
+                    "lengthModeColumn": LENGTH_MODE_COLUMNS.get(
+                        self.config.length_mode, "length"
+                    ),
+                    # As with rethreshold: the records on screen carry their own mode, and a
+                    # record that could not be re-measured would still be in the old one.
+                    "lengthModeApplied": self._applied_length_mode(result),
                     "rethreshold": self.config.rethreshold,
                     # What the records on screen were actually measured with, which is not
                     # the same thing as the setting: switching modes does not re-analyse
@@ -553,6 +610,65 @@ class Session:
         return f"max circularity {value:.2f}{suffix}"
 
     @staticmethod
+    def _applied_length_mode(result) -> str:
+        """The length definition the records on screen actually hold.
+
+        Normally the same as the setting, because switching re-measures everything. It differs
+        only where a record could not be re-measured -- one that predates join support, or a
+        walk that now fails to measure -- and ``"mixed"`` is what stops the panel claiming a
+        definition for a table that does not have one.
+        """
+        modes = {r.measurement.length_mode for r in result.records}
+        if not modes:
+            return result.config.length_mode
+        return modes.pop() if len(modes) == 1 else "mixed"
+
+    def set_length_mode(self, value: str) -> str:
+        """Switch what a length measures, and re-measure everything already on screen.
+
+        Retroactive, unlike ``set_rethreshold``, and for a reason worth stating: this changes
+        no trace at all. Every record keeps its walk, its edits and its exclusions, and only
+        the number computed from that walk moves -- so there is nothing a session could lose
+        by flipping it, and leaving the table in the old definition would just be a second
+        mode to explain.
+
+        Session-wide, like the filters: a length that means one thing on image 3 and another
+        on image 7 is worse than either.
+        """
+        value = str(value or "").strip()
+        if value not in LENGTH_MODES:
+            return f"{value!r} is not a length mode"
+
+        with self.lock:
+            if value == self.config.length_mode:
+                return f"length mode already {value}"
+            self.config.length_mode = value
+            indices = sorted(self.results)
+
+        # Re-measuring is a spline fit and an intensity profile per record, so a folder that
+        # has been paged through is seconds of work rather than milliseconds. It reports
+        # through the same progress stream the analysis uses instead of looking hung.
+        remeasured = 0
+        for done, i in enumerate(indices, start=1):
+            if len(indices) > 1:
+                self.set_status("measuring", done, len(indices), self.paths[i].name)
+            with self.lock:
+                n = self.results[i].apply_length_mode(value)
+                if n:
+                    remeasured += n
+                    self._commit(i)
+        if len(indices) > 1:
+            self.set_status("ready", 0, 0, "")
+
+        label = {
+            "profile": "reporting AIS length: the stretch between the f crossings (ais_auto.m)",
+            "trace": "reporting the whole skeleton, in pixel steps",
+            "arclength": "reporting the whole skeleton, as drawn arc length",
+            "max": "reporting AIS max: how far along the trace fluorescence peaks (ais_auto.m)",
+        }[value]
+        return label + (f" — {remeasured} trace(s) re-measured" if remeasured else "")
+
+    @staticmethod
     def _applied_rethreshold(result) -> str:
         """The mode the records on screen were actually produced with.
 
@@ -724,7 +840,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, s.image_png(index), "image/png")
             if path == "/api/events":
                 return self._events()
-        except BrokenPipeError:
+        except ConnectionError:
+            # The whole family, not just BrokenPipeError: a reload aborts an image request
+            # mid-write as a *reset* rather than a broken pipe, and falling through to the
+            # handler below would print a traceback and then fail again trying to send a 500
+            # down the socket that just went away.
             return
         except Exception as exc:  # a failed request must not kill the server
             import traceback
@@ -792,6 +912,8 @@ class Handler(BaseHTTPRequestHandler):
                     message = s.set_skeleton_width(body["skeletonWidth"])
                 elif "rethreshold" in body:
                     message = s.set_rethreshold(body["rethreshold"])
+                elif "lengthMode" in body:
+                    message = s.set_length_mode(body["lengthMode"])
                 else:
                     message = s.set_skeleton_color(body.get("skeletonColor", ""))
             elif path == "/api/undo":
@@ -813,13 +935,47 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, b"not found", "text/plain")
 
             return self._json({"message": message, **s.state_json(index)})
-        except BrokenPipeError:
+        except ConnectionError:
+            # As in do_GET: the edit itself has already been applied and committed, and the
+            # only party interested in the reply has gone. Nothing to report.
             return
         except Exception as exc:
             import traceback
 
             traceback.print_exc()
             return self._json({"error": str(exc)}, 500)
+
+
+class QuietHTTPServer(ThreadingHTTPServer):
+    """``ThreadingHTTPServer`` that stays quiet when a browser hangs up on it.
+
+    A dropped connection is normal here and is not an error anybody can act on. The page holds
+    an open SSE stream, keep-alive connections idle between clicks, and every image request can
+    be abandoned mid-flight; reloading the page, closing the tab, switching images or simply
+    leaving the browser idle therefore ends connections the server is sitting in ``readline``
+    on. The socket raises ``ConnectionResetError`` there, out of the request handler's reach --
+    it happens between requests, not inside one -- and ``socketserver`` prints the full
+    traceback to stderr for each one:
+
+        Exception occurred during processing of request from ('127.0.0.1', 53745)
+        ...
+        ConnectionResetError: [Errno 54] Connection reset by peer
+
+    Nothing is lost when this happens: the request either finished or was abandoned by the only
+    party that wanted it, and the thread it was on exits either way. The traceback is pure
+    noise in a console whose job is to report the analysis, and -- worse -- it trains the user
+    to ignore a console that also carries the autosave failures that *do* matter.
+
+    Only the hang-up family is swallowed. Everything else still prints, because a real
+    exception in a handler thread is the one thing this console must not hide.
+    """
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def serve(path, config: AnalysisConfig | None = None, outdir=None, port: int = 8765,
@@ -833,8 +989,7 @@ def serve(path, config: AnalysisConfig | None = None, outdir=None, port: int = 8
     session = Session(paths, config, outdir=outdir)
     Handler.session = session
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    server.daemon_threads = True
+    server = QuietHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
 
     print(f"aiscounter: {len(paths)} image(s)")

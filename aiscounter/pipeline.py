@@ -17,6 +17,10 @@ sometimes disagrees with the biology and no amount of re-clicking fixes it:
                 on the command line before anything has been seen. ``apply_min_length`` and
                 ``apply_max_circularity`` set one knob and re-run it.
 
+``apply_length_mode`` is a fourth kind of change: it re-measures every record from the walk it
+already has, under a different definition of length (``config.LENGTH_MODES``). Nothing about
+any trace moves, so it is safe to flip on a curated image.
+
 All three re-measure through ``measure_from_trace``, the same function the automatic pass
 uses, so an edited AIS is measured by the original's arithmetic exactly like every other one.
 """
@@ -28,11 +32,11 @@ from pathlib import Path
 
 import numpy as np
 
-from .config import AnalysisConfig
+from .config import LENGTH_MODES, AnalysisConfig
 from .detect import Detection, detect_all, trace_component
 from .imaging import AISImage, load_image
 from .matlab_compat import bwdist_indices
-from .measure import AISMeasurement, circularity, measure_from_trace
+from .measure import AISMeasurement, circularity, filter_length, measure_from_trace
 from .segment import Segmentation, rescale_threshold_for_component, segment
 
 JOIN_GAP_WARN_PX = 60
@@ -587,6 +591,49 @@ class AnalysisResult:
         self.config.max_circularity = float(maximum)
         return self.apply_filters()
 
+    def apply_length_mode(self, mode: str) -> int:
+        """Re-measure every record under a different definition of length (``LENGTH_MODES``).
+
+        Applied retroactively, which the threshold mode deliberately is not. The difference is
+        that this changes only the arithmetic applied to a walk, never the walk: joins and
+        splices live in ``trace_rows``/``trace_cols``, so re-measuring reproduces exactly the
+        trace on screen with a different number attached. Every manual edit survives, which is
+        what makes it safe to offer as a switch mid-session.
+
+        Returns how many records were re-measured.
+        """
+        if mode not in LENGTH_MODES:
+            raise ValueError(f"length_mode must be one of {LENGTH_MODES}, got {mode!r}")
+        self.config.length_mode = mode
+
+        remeasured = 0
+        for record in self.records:
+            old = record.measurement
+            # A record from before join support has no walk to re-measure from. Left alone,
+            # holding its old number and its own length_mode, rather than guessed at.
+            if old.trace_rows is None or old.length_mode == mode:
+                continue
+            try:
+                fresh = _measure_walk(
+                    self.image, old.trace_rows, old.trace_cols, self.config,
+                    index=old.index, seed_rc=old.seed_rc,
+                )
+            except Exception:
+                continue  # one unmeasurable trace must not strand the rest in two modes
+            # Warnings an edit added after the fact -- the join gap, the shared-component flag
+            # -- are facts about this record rather than about its arithmetic, so they are
+            # carried across instead of being recomputed away.
+            fresh.warnings = fresh.warnings + [
+                w for w in old.warnings if w not in fresh.warnings
+            ]
+            record.measurement = fresh
+            remeasured += 1
+
+        # Lengths have moved, so the length and loop filters have to be asked again. Only
+        # records the user has not ruled on are touched, exactly as when a slider moves.
+        self.apply_filters()
+        return remeasured
+
     def nearest_active(self, row: int, col: int, max_distance: float = 40.0):
         """The active AIS whose trace passes closest to (row, col), if any is near enough."""
         best, best_dist = None, np.inf
@@ -624,6 +671,7 @@ def _measure_walk(
         pixconv=config.pixconv or image.pixconv,
         f=config.f_fraction,
         smooth=config.spline_smooth,
+        length_mode=config.length_mode,
     )
 
 
@@ -764,10 +812,15 @@ def _measurement_rejection_reason(measurement: AISMeasurement, config: AnalysisC
         )
     if config.drop_warned and measurement.warnings:
         return measurement.warnings[0]
-    if config.min_length_um is not None and measurement.length_um < config.min_length_um:
-        return f"length {measurement.length_um:.2f} um below min_length_um={config.min_length_um}"
-    if config.max_length_um is not None and measurement.length_um > config.max_length_um:
-        return f"length {measurement.length_um:.2f} um above max_length_um={config.max_length_um}"
+    # Named, not just quoted: in "max" mode the filter judges the trace length rather than the
+    # position on screen, and a reason giving a number the user cannot see anywhere is worse
+    # than no reason at all.
+    length = filter_length(measurement)
+    noun = "trace length" if measurement.length_mode == "max" else "length"
+    if config.min_length_um is not None and length < config.min_length_um:
+        return f"{noun} {length:.2f} um below min_length_um={config.min_length_um}"
+    if config.max_length_um is not None and length > config.max_length_um:
+        return f"{noun} {length:.2f} um above max_length_um={config.max_length_um}"
     if config.max_circularity < 1.0:
         value = circularity(measurement)
         if value > config.max_circularity:

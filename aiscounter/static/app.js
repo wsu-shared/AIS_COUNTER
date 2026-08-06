@@ -78,6 +78,8 @@ function render(data, opts) {
   if (data.dirty) name += ` <span class="dirty">*unsaved</span>`;
   else if (data.saved) name += ` <span class="saved">saved</span>`;
   $('#imgname').innerHTML = name;
+  $('#imgname').title = data.image.path || data.image.name;
+  renderPath(data.image.path);
 
   // Drop selected uids that no longer exist or have been excluded -- a join, a delete or an
   // undo can retire a record while it is still selected, and joining a ghost would fail
@@ -130,6 +132,7 @@ function renderControls(data) {
     $('#skelwidthval').textContent = Number(s.skeletonWidth).toFixed(1) + ' px';
   }
 
+  renderLengthMode(data);
   renderThreshold(data);
 
   // "reset to the automatic detections" is a lie when there were none: in manual mode the
@@ -139,6 +142,63 @@ function renderControls(data) {
     : 'Reset to automatic detections (R)';
 
   renderAutosave(data.autosave);
+}
+
+/* The full path of the image on screen, wrapped rather than truncated: the point of showing
+   it is that it can be read and copied, and an ellipsis in the middle of a path defeats both.
+   Clicking copies it, which is the thing anyone actually wants from a path on screen. */
+function renderPath(path) {
+  const el = $('#imgpath');
+  if (!el) return;
+  el.textContent = path || '';
+  el.title = path ? 'click to copy the full path' : '';
+  el.style.display = path ? '' : 'none';
+}
+
+async function copyPath() {
+  const path = state.data && state.data.image && state.data.image.path;
+  if (!path) return;
+  try {
+    await navigator.clipboard.writeText(path);
+    toast('path copied');
+  } catch (e) {
+    // Clipboard access can be refused whatever the page is served over; selecting the text
+    // leaves the user one keystroke from the same result rather than nothing at all.
+    const range = document.createRange();
+    range.selectNodeContents($('#imgpath'));
+    const sel = getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    toast('press ⌘C to copy the selected path');
+  }
+}
+
+/* What the number on every row means, said in words under the selector and again in the
+   column heading. The number and the drawn skeleton disagree by design in the original's mode
+   -- the length is where the *intensity* crosses f, not where the trace ends -- and this is
+   where that is explained. */
+function renderLengthMode(data) {
+  const s = data.settings, select = $('#lengthmode'), note = $('#lengthnote');
+  if (!select) return;
+  if (document.activeElement !== select) select.value = s.lengthMode || 'profile';
+
+  // The sidebar column is a different quantity in each mode, and in "max" mode not a length
+  // at all; leaving it headed "length" would be a mislabelled column of numbers.
+  const heading = $('#listheadvalue');
+  if (heading) heading.textContent = s.lengthModeColumn || 'length';
+
+  const applied = s.lengthModeApplied || s.lengthMode;
+  if (applied && applied !== s.lengthMode) {
+    // Only reachable when a record could not be re-measured, which is rare and worth saying
+    // out loud rather than leaving as a table of two different quantities.
+    note.className = 'ctlnote warn';
+    note.textContent = applied === 'mixed'
+      ? 'some traces could not be re-measured — this table mixes definitions; press R'
+      : 'these traces still hold the ' + applied + ' definition — press R to re-analyse';
+    return;
+  }
+  note.className = 'ctlnote';
+  note.textContent = s.lengthModeNote || '';
 }
 
 /* The threshold control says three things at once, because the setting and what is on screen
@@ -370,11 +430,19 @@ function renderSidebar() {
       + `<span class="len">${r.length} µm</span>`
       + (r.warnings.length ? `<span class="flag" title="${escapeHtml(r.invalidReason || r.warnings[0])}">!</span>` : '')
       + `<button class="del" title="Delete">✕</button>`;
+    // Every measurement of this trace, whichever one the row is showing. In the original's
+    // mode the length is the AIS between the intensity crossings and the drawn skeleton runs
+    // past it, which looks like a bug until the rest of the numbers are in front of you.
+    const detail = [
+      `AIS length ${r.aisLength} µm · AIS max at ${r.maxPosition} µm`,
+      `whole trace ${r.traceLength} µm in pixel steps, ${r.arclength} µm along the spline`,
+    ];
     // Under rethreshold="original" each trace has its own level, and which one is a fair
     // question to ask of a specific row rather than of the image.
     if (r.threshold && d.settings.rethreshold === 'original') {
-      li.title = `component ${r.label} · threshold ${r.threshold.toFixed(4)}`;
+      detail.push(`component ${r.label} · threshold ${r.threshold.toFixed(4)}`);
     }
+    li.title = detail.join('\n');
     li.addEventListener('pointerenter', () => setHot(r.uid));
     li.addEventListener('pointerleave', () => setHot(null));
     li.addEventListener('click', (e) => {
@@ -580,6 +648,16 @@ async function setSkeletonColor(value) {
    as well as flashed because it is the only setting whose effect is not visible immediately. */
 async function setRethreshold(value) {
   const res = await api('/api/settings', { rethreshold: value });
+  if (res) { render(res, { fit: false }); flash(res.message); toast(res.message); }
+}
+
+/* Applied retroactively, unlike the threshold switch: this re-measures each existing walk
+   rather than re-tracing anything, so nothing on screen moves and no edit is at risk. The
+   whole session is re-measured, which is seconds on a folder that has been paged through --
+   hence the status line rather than a silent wait. */
+async function setLengthMode(value) {
+  setStatus('re-measuring…');
+  const res = await api('/api/settings', { lengthMode: value });
   if (res) { render(res, { fit: false }); flash(res.message); toast(res.message); }
 }
 
@@ -838,6 +916,13 @@ function wire() {
     ev.target.blur();
     setRethreshold(ev.target.value);
   });
+  // Blurred for the same reason as the threshold selector: the note it raises can ask for a
+  // keypress the keyboard handler ignores while a form control holds focus.
+  $('#lengthmode').addEventListener('change', (ev) => {
+    ev.target.blur();
+    setLengthMode(ev.target.value);
+  });
+  $('#imgpath').addEventListener('click', copyPath);
   // Recolour locally on input for instant feedback while the picker is open; only tell the
   // server on change, when the user has settled on one.
   $('#skelcolor').addEventListener('input', (ev) =>

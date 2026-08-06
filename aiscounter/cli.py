@@ -25,7 +25,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .config import RETHRESHOLD_MODES, AnalysisConfig
+from .config import LENGTH_MODES, RETHRESHOLD_MODES, AnalysisConfig
 from .imaging import find_images
 from .pipeline import analyse_image
 from .report import write_report, write_xlsx
@@ -77,6 +77,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "segmenting the image again for each AIS (slower, and not "
                         "reproducible between analysts — see docs/DIFFERENCES.md 3.2)")
 
+    g.add_argument("--length-mode", choices=LENGTH_MODES, default="profile",
+                   help="which measurement is reported as the length. 'profile' is the "
+                        "original's AIS Length, the stretch between the two f crossings of "
+                        "the intensity profile — the AIS marker, usually shorter than the "
+                        "skeleton drawn through it. 'trace' and 'arclength' measure the whole "
+                        "skeleton end to end, in the original's pixel-step convention and "
+                        "along the fitted spline respectively. 'max' is the original's AIS "
+                        "Max, the position of peak fluorescence along the axon — a position, "
+                        "not a length. All of them are written to the report whatever this is "
+                        "set to; see docs/DIFFERENCES.md 3.8")
+
     a = p.add_argument_group("automatic detection filters")
     a.add_argument("--min-length", type=float, default=5.0, help="reject AIS shorter than this")
     a.add_argument("--max-length", type=float, default=120.0, help="reject AIS longer than this")
@@ -113,6 +124,7 @@ def config_from_args(args) -> AnalysisConfig:
         spline_smooth=args.spline_smooth,
         min_component_pixels=args.min_component_pixels,
         rethreshold=args.rethreshold,
+        length_mode=args.length_mode,
         channel=args.channel,
         min_length_um=args.min_length,
         max_length_um=args.max_length,

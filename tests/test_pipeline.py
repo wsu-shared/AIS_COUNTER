@@ -172,6 +172,9 @@ def test_config_length_bounds():
         invalid = False
         warnings = []
         length_um = 4.0
+        # Which measurement the length is decides what the bounds compare against; see
+        # measure.filter_length. "profile" is the default and the one they judge directly.
+        length_mode = "profile"
 
     assert not cfg.accepts(M())
     M.length_um = 60.0

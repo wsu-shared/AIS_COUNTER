@@ -27,12 +27,19 @@ EXCLUDED_COLOUR = "#FF5252"
 LABEL_COLOUR = "#FFEB3B"
 
 ROW_HEADERS = [
-    "image", "ais", "uid", "included", "source", "length_um", "arclength_um",
+    "image", "ais", "uid", "included", "source", "length_um", "length_mode",
+    "ais_length_um", "trace_length_um", "arclength_um",
     "circularity", "start_um", "end_um", "mid_um", "max_um", "profile_points",
     "seed_row", "seed_col", "component_label", "threshold", "note",
 ]
 """Column order for the per-AIS table, shared by the workbook and the CSV so the two
-never drift apart."""
+never drift apart.
+
+``length_um`` is whichever measurement was chosen as the headline and ``length_mode`` says
+which -- a column of lengths without it is not comparable to anything. The three that follow
+are the alternatives, always present whatever the mode, so a table measured one way can still
+answer a question asked the other way. ``start_um``/``end_um``/``mid_um``/``max_um`` are the
+original's own five (with ``ais_length_um``), and never change with the mode."""
 
 PNG_LINEWIDTH_SCALE = 0.8
 """Screen pixels -> matplotlib points for the drawn trace.
@@ -86,7 +93,8 @@ def render_png(result, path, dpi: int = 150, show_excluded: bool = False) -> Pat
         colour = EXCLUDED_COLOUR if record.excluded else trace_colour
         ax.plot(m.spline_x, m.spline_y, "-", color=colour, linewidth=linewidth, alpha=0.9)
 
-        # Mark the AIS start/end along the trace where the profile crosses f.
+        # The two ends of what the length actually measures: the f crossings in the original's
+        # mode, the ends of the trace in the whole-trace modes (see measure.LENGTH_MODES).
         if not record.excluded:
             for idx, marker in ((m.ais_start_idx, "o"), (m.ais_end_idx, "s")):
                 i = int(np.clip(idx - 1, 0, m.x_pix.size - 1))
@@ -116,6 +124,17 @@ def render_png(result, path, dpi: int = 150, show_excluded: bool = False) -> Pat
         summary = f"{result.image.name}   n={lengths.size}   mean={lengths.mean():.2f} um"
     else:
         summary = f"{result.image.name}   n=0"
+    # Only when it is not the original's: a PNG travels on its own into slides and emails, and
+    # a number that is not the AIS length has to say so or nobody can reconcile it with a
+    # previous figure. Silent in "profile" mode, which is what every number has always meant.
+    labels = {
+        "trace": "[reported: whole trace, pixel steps]",
+        "arclength": "[reported: whole trace, spline arc length]",
+        "max": "[reported: AIS max position, not a length]",
+    }
+    mode = getattr(result.config, "length_mode", "profile")
+    if mode in labels:
+        summary += "   " + labels[mode]
     if result.image.processed_is_derived:
         summary += "   [processed channel DERIVED - not ImageJ 'method 2.5']"
     ax.set_title(summary, fontsize=10, color="black", pad=8)
@@ -144,6 +163,9 @@ def _rows_for(result) -> list:
                 "included": not record.excluded,
                 "source": record.source,
                 "length_um": round(m.length_um, 4),
+                "length_mode": m.length_mode,
+                "ais_length_um": round(m.ais_length_um, 4),
+                "trace_length_um": round(m.trace_length_um, 4),
                 "arclength_um": round(m.arclength_um, 4),
                 "circularity": round(circularity(m), 4),
                 "start_um": round(m.start_um, 4),
@@ -205,7 +227,7 @@ def write_xlsx(results, path, config=None) -> Path:
     ws2.append(
         ["image", "n_ais", "mean_length_um", "median_length_um", "sd_length_um",
          "min_length_um", "max_length_um", "n_excluded", "threshold", "rethreshold",
-         "pixconv_um", "processed_derived"]
+         "length_mode", "pixconv_um", "processed_derived", "image_path"]
     )
     for result in results:
         L = result.lengths
@@ -223,8 +245,12 @@ def write_xlsx(results, path, config=None) -> Path:
             # In "original" mode the image-level threshold above is only the starting point:
             # each AIS was measured at its own, in the per-AIS sheet's threshold column.
             result.rethreshold,
+            result.config.length_mode,
             result.config.pixconv or result.image.pixconv,
             result.image.processed_is_derived,
+            # Which file on disk this row came from. Image names repeat between folders, and a
+            # summary that cannot be traced back to a file is hard to trust six months later.
+            str(Path(result.image.path).resolve()),
         ])
 
     # --- sheet 3: provenance ------------------------------------------------------

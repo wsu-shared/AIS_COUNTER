@@ -133,6 +133,9 @@ Right-click deletes in any mode and shift+click adds in any mode, so rapid clean
 mode switching. Scroll to zoom, drag to pan, double-click to zoom in. Hovering a trace
 highlights its row in the sidebar and vice versa; clicking a row zooms to that AIS.
 
+The **full path of the image on screen** is under the statistics in the sidebar — image names
+repeat between folders, and the top bar only has room for the last one. Click it to copy it.
+
 Adding uses the original's exact interaction: the click snaps to the nearest component, then
 to the nearest skeleton pixel, then traces. One component holds one AIS, so a second click on
 the same axon **re-seeds** it rather than double-counting it — which is also how you overrule a
@@ -163,6 +166,66 @@ skeleton — so the walk is cut where you click and each half is measured indepe
 own peak and its own crossings.
 
 Both are ordinary undo steps (`U`).
+
+### Which measurement is reported
+
+`ais_auto.m` prints five numbers for every AIS — **AIS Start, End, Mid, Max** and **Length** —
+and copies only the length to the clipboard. All five are computed here whatever you choose
+below, and all five are in the report; this setting only picks the one drawn on the image,
+listed in the sidebar and averaged into the statistics.
+
+**The original's length is not the length of the trace**, and this catches everyone out the
+first time they look closely. It is the stretch whose *smoothed intensity* stays above `f`
+(0.33 of the peak) — from the last profile sample below `f` before the peak to the last one
+above it after. That is a brightness landmark, not a geometric one, so the magenta skeleton
+normally runs well past both yellow markers, and the number beside it covers only the part
+between them. The trace is not wrong and neither is the number; they answer different
+questions.
+
+The **length measures** dropdown picks which question:
+
+* **AIS length — f crossings** (`--length-mode profile`, the default) — the original's
+  clipboard number, exactly. The circle and square mark where it starts and ends.
+* **whole trace — pixel steps** (`--length-mode trace`) — the entire skeleton, end to end,
+  counted the original's way: one pixel per profile sample (quirk 4 in
+  `docs/DIFFERENCES.md`). Those pixels step one axis at a time, so the count follows a
+  staircase around the trace and reads *longer* than the trace itself — about 8–32% on real
+  traces, √2 in the limit, and equal only on a straight horizontal or vertical run.
+* **whole trace — arc length** (`--length-mode arclength`) — the entire skeleton measured along
+  the drawn spline: the length of the line you can see, without the staircase. This is the
+  figure `ais_auto.m` computes as `ax_um` and then never uses.
+* **AIS max — peak position** (`--length-mode max`) — the original's **AIS Max**: how far along
+  the axon the fluorescence peaks. Matched to MATLAB to nine decimal places, like everything
+  else here.
+
+If you want one number for "how long is this neurite", **arc length** is the one to use; the
+pixel-step mode is there for consistency with the original's own way of counting distance.
+
+**AIS max is a position, not a length**, measured from where the trace starts — so unlike the
+other three it changes if the same axon is traced from the other end. That is true of the
+original as well (it is why `ais_auto.m` says to click near the AIS start), and it is worth
+keeping in mind for automatic detections, where the walk starts at whichever endpoint gives the
+longest path. Two things adjust for it: the **min/max AIS length** filters keep judging the
+whole trace rather than the peak position — otherwise a good AIS whose brightest point sits
+near the start of the walk would be thrown away — and the sidebar column is renamed to *AIS
+max* so a column of positions is never headed "length".
+
+The markers always bracket the number: the `f` crossings in the default mode, the ends of the
+trace in the whole-trace modes, and the start-to-peak span in AIS max. Every export records
+which measurement produced its numbers — `length_mode` sits next to `length_um` in the per-AIS
+table and in the summary sheet, and the PNG title says so whenever it is not the AIS length.
+Hovering a sidebar row shows all of them at once whatever the mode, so you can see the
+difference without switching.
+
+**Switching re-measures every image already open, and costs you nothing.** Unlike the threshold
+mode below, this re-traces nothing: each record is re-measured from the walk it already has, so
+joins, splices, manual additions and deletions all survive, and switching back reproduces the
+previous numbers to the last digit.
+
+One side effect worth knowing: neither whole-trace mode can produce the original's meaningless
+lengths, because neither reads `ais_end`. A speck too short for the sliding mean to index
+(`docs/DIFFERENCES.md` 3.7) reports its own 2 µm instead of the 89 µm the fallback invents, and
+is then rejected by **min AIS length** like any other short trace.
 
 ### Threshold mode
 
@@ -276,12 +339,16 @@ click into a long wait.
 ## Output
 
 * `<name>_ais_traces.png` — the raw image with every accepted trace drawn and labelled with its
-  length; circles mark AIS start, squares mark AIS end.
+  length; the circle and square mark the two ends of what the length measures — the `f`
+  crossings in the default mode, the ends of the trace in the whole-trace modes.
 * `<name>_ais_results.xlsx` — three sheets:
-  * **AIS** — one row per AIS: `length_um`, `arclength_um`, `circularity`, start/end/mid/max,
-    seed, the `threshold` it was measured at, and a note. Excluded rows are kept and shaded,
-    with the reason, so nothing vanishes silently.
-  * **Summary** — one row per image: n, mean, median, SD, range, threshold and threshold mode.
+  * **AIS** — one row per AIS: `length_um` with the `length_mode` that says which measurement
+    it is, then the alternatives it could have been (`ais_length_um`, `trace_length_um`,
+    `arclength_um`), `circularity`, the original's `start_um`/`end_um`/`mid_um`/`max_um`, seed,
+    the `threshold` it was measured at, and a note. Excluded rows are kept and shaded, with the
+    reason, so nothing vanishes silently.
+  * **Summary** — one row per image: n, mean, median, SD, range, threshold, threshold mode,
+    length mode and the full path of the image the row came from.
   * **Parameters** — every setting used, for provenance.
 * `ais_results_autosave.csv` — the **AIS** table for every image analysed so far, rewritten
   continuously during a review session (see above).
