@@ -100,6 +100,82 @@ if xattr -p com.apple.quarantine . >/dev/null 2>&1 \
     xattr -dr com.apple.quarantine . 2>/dev/null || true
 fi
 
+# ----------------------------------------------------------------------------- self update
+
+# Pick up whatever has landed on GitHub since this copy was made. Only ever a fast-forward of
+# the branch you are already on, and only when there is nothing of yours that could be lost:
+# a checkout with local edits, local commits, or a detached HEAD is left exactly as it is and
+# said out loud, because quietly touching somebody's work in progress is worse than running a
+# version that is a few commits behind.
+#
+# Skipped entirely for a plain unzipped download (no .git), which is the common case for the
+# people this launcher is written for -- there is nothing to pull into.
+#
+#   AISCOUNTER_NO_UPDATE=1 ./run.sh     don't go to the network at all
+#
+# The requirements hash is computed after this, so a pull that changes requirements.txt
+# rebuilds the .venv on this same run rather than the next one.
+
+update_from_git() {
+    if [ -n "${AISCOUNTER_NO_UPDATE:-}" ]; then
+        return 0
+    fi
+    command -v git >/dev/null 2>&1 || return 0
+    [ "$(git rev-parse --is-inside-work-tree 2>/dev/null || true)" = "true" ] || return 0
+    git remote get-url origin >/dev/null 2>&1 || return 0
+
+    local branch upstream
+    branch="$(git symbolic-ref --short -q HEAD || true)"
+    if [ -z "$branch" ]; then
+        note "detached HEAD -- skipping the update check"
+        return 0
+    fi
+
+    step "Checking GitHub for updates"
+
+    # No credential or host-key prompt is allowed to turn this into a hang: nobody who
+    # double-clicked a file is watching for a password question hidden behind a browser.
+    if ! GIT_TERMINAL_PROMPT=0 \
+         GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes -o ConnectTimeout=10}" \
+         git fetch --quiet origin "$branch" 2>/dev/null; then
+        note "couldn't reach GitHub -- carrying on with the copy you have"
+        return 0
+    fi
+
+    upstream="$(git rev-parse --verify -q "origin/$branch" || true)"
+    if [ -z "$upstream" ]; then
+        note "no origin/$branch to compare against -- carrying on"
+        return 0
+    fi
+
+    if [ "$(git rev-parse HEAD)" = "$upstream" ]; then
+        note "already up to date"
+        return 0
+    fi
+
+    # Behind and nothing else? Then a fast-forward is safe. Anything else -- your own commits,
+    # or a diverged branch -- is yours to resolve, and merging it here is not this script's
+    # business.
+    if ! git merge-base --is-ancestor HEAD "$upstream" 2>/dev/null; then
+        note "your branch has commits that aren't on GitHub -- skipping the update"
+        return 0
+    fi
+
+    if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null || true)" ]; then
+        note "you have uncommitted changes -- skipping the update so they stay put"
+        return 0
+    fi
+
+    if git merge --ff-only --quiet "$upstream" 2>/dev/null; then
+        note "updated to $(git log -1 --format='%h %s' HEAD)"
+    else
+        note "couldn't fast-forward -- carrying on with the copy you have"
+    fi
+}
+
+update_from_git
+say
+
 # ----------------------------------------------------------------------------- which python
 
 # pyproject.toml says requires-python >= 3.10, and this is the same floor.
