@@ -175,6 +175,30 @@ main { display: flex; height: calc(100% - 48px - 2px - 26px); }
 }
 .band.on rect { visibility: visible; }
 
+/* ---------- ruler cursor ---------- */
+/* The system cursor goes away while the ruler is on: two pointers on screen, one of which is
+   not where the clicks land, is worse than none. The ruler draws its own crosshair at the
+   exact click point so nothing is lost. */
+#viewport.ruler-on, #viewport.ruler-on.add, #viewport.ruler-on.delete,
+#viewport.ruler-on.splice, #viewport.ruler-on.select,
+/* The traces set a pointer cursor of their own, which would put the system arrow back on
+   screen over the one part of the image the ruler is most often held against. */
+#viewport.ruler-on .trace, #viewport.ruler-on .hit { cursor: none; }
+.ruler { position: absolute; inset: 0; pointer-events: none; overflow: visible; visibility: hidden; }
+.ruler.on { visibility: visible; }
+/* Yellow, like the AIS markers, and never the trace colour: the ruler is a tool laid over the
+   image, and it must not be mistakable for something measured. */
+.rulerbar, .rulercap {
+  stroke: var(--marker); stroke-width: 2; stroke-linecap: butt;
+  paint-order: stroke; filter: drop-shadow(0 0 2px rgba(0,0,0,.9));
+}
+.rulerx { stroke: var(--marker); stroke-width: 1; opacity: .9; }
+.rulerlabel {
+  fill: var(--marker); font: 700 11px/1 ui-monospace, Menlo, monospace;
+  paint-order: stroke; stroke: #000; stroke-width: 3px; stroke-linejoin: round;
+  user-select: none;
+}
+
 #list li.selected { background: rgba(124,247,107,.14); box-shadow: inset 2px 0 0 var(--selected); }
 #list li.selected .num { background: var(--selected); color: #06210a; }
 
@@ -218,9 +242,13 @@ main { display: flex; height: calc(100% - 48px - 2px - 26px); }
 }
 
 /* ---------- controls ---------- */
+/* Scrolls in its own right on a short window. There are more settings here than fit a laptop
+   screen, and a sidebar that simply ran off the bottom took the AIS list with it -- the list
+   being the half of the sidebar the work actually happens in. */
 .controls {
   padding: 10px 12px; border-bottom: 1px solid var(--line);
   display: flex; flex-direction: column; gap: 12px;
+  min-height: 0; overflow-y: auto;
 }
 .ctl { display: flex; flex-direction: column; gap: 6px; }
 .ctl.row { flex-direction: row; align-items: center; justify-content: space-between; }
@@ -245,6 +273,10 @@ main { display: flex; height: calc(100% - 48px - 2px - 26px); }
 .controls input[type=range]::-moz-range-thumb {
   width: 14px; height: 14px; border-radius: 50%;
   background: var(--accent); border: none; cursor: pointer;
+}
+.controls input[type=checkbox] {
+  width: 15px; height: 15px; margin: 0; cursor: pointer;
+  accent-color: var(--accent);
 }
 .controls input[type=color] {
   width: 42px; height: 24px; padding: 0; cursor: pointer;
@@ -282,7 +314,9 @@ main { display: flex; height: calc(100% - 48px - 2px - 26px); }
   font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
   border-bottom: 1px solid var(--line);
 }
-#list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+/* Keeps a few rows on screen whatever the settings above are doing: the controls give up
+   their space first, because they can be scrolled to and the list is what is being read. */
+#list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; min-height: 96px; }
 #list li {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 12px; border-bottom: 1px solid rgba(42,51,63,.5);

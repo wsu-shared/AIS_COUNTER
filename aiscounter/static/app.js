@@ -25,6 +25,11 @@ const state = {
   inflight: 0,
   swallowClick: false,    // a trace handled this gesture; the viewport must not also act
   downUid: null,          // uid of the trace this gesture started on, if any
+  // The ruler cursor: a bar of a known length in microns drawn at the pointer (x/y are page
+  // coordinates). `touched` records whether the user has chosen a length of their own --
+  // until they have it follows the min AIS length, so the cursor is a picture of the cut-off
+  // currently being applied.
+  ruler: { on: false, um: 5, touched: false, x: 0, y: 0, inside: false },
 };
 
 // userZoomed distinguishes "the user chose this zoom" from "we fitted it for them", which is
@@ -131,6 +136,8 @@ function renderControls(data) {
     width.value = s.skeletonWidth;
     $('#skelwidthval').textContent = Number(s.skeletonWidth).toFixed(1) + ' px';
   }
+
+  renderRuler(data);
 
   renderLengthMode(data);
   renderThreshold(data);
@@ -525,6 +532,9 @@ function applyView() {
   $('#canvas').style.transform = `translate(${view.x}px,${view.y}px) scale(${view.scale})`;
   $('#zoomlevel').textContent = Math.round(view.scale * 100) + '%';
   applyLabelScale();
+  // The ruler is a distance on the image, so a zoom changes its length on screen even when
+  // the pointer has not moved.
+  drawRuler();
 }
 
 function zoomFit() {
@@ -574,6 +584,107 @@ function toImage(ev) {
     col: (ev.clientX - vp.left - view.x) / view.scale,
     row: (ev.clientY - vp.top - view.y) / view.scale,
   };
+}
+
+/* ---------------------------------------------------------------- ruler cursor
+ *
+ * A bar of a stated length in microns, drawn at the pointer, for holding a known distance
+ * against something on the image -- is this trace past the cut-off, is that gap a micron or
+ * five. It is a lens, not an edit: it touches no record, no measurement and no saved PNG.
+ *
+ * Length comes from this image's own calibration (CZI metadata where there is any, else the
+ * original's 0.161 µm/px), so the bar is right on a folder that mixes acquisitions, and it is
+ * recomputed from the zoom rather than scaled with the canvas -- the bar has to stay the same
+ * distance on the image while its ends stay crisp.
+ */
+
+const RULER_MAX_UM = 50;
+
+function pixconv() {
+  const p = state.data && Number(state.data.image.pixconv);
+  return p > 0 ? p : 0.161;   // the original's constant, which is the server's fallback too
+}
+
+/* The floor is the length filter's own cut-off: the shortest trace that survives is the most
+   useful thing to be able to lay against a trace. Never zero, which would draw nothing. */
+function rulerFloor() {
+  const s = state.data && state.data.settings;
+  return Math.max(0.5, Number((s && s.minLength) || 0));
+}
+
+function renderRuler(data) {
+  const lo = rulerFloor();
+  const slider = $('#rulerlen');
+  slider.min = lo;
+  slider.max = RULER_MAX_UM;
+  if (!state.ruler.touched) state.ruler.um = lo;
+  state.ruler.um = Math.min(RULER_MAX_UM, Math.max(lo, state.ruler.um));
+  // Skipped mid-drag, like the other sliders: the thumb under the user's finger is the
+  // authority on its own position.
+  if (document.activeElement !== slider) slider.value = state.ruler.um;
+  $('#rulerlenval').textContent = Number(state.ruler.um).toFixed(1) + ' µm';
+
+  // The image's own pixel size, stated whether the cursor is on or off: it is the number the
+  // bar's length rests on, and it is not written down anywhere else in the UI.
+  const pc = pixconv();
+  $('#rulernote').textContent = data
+    ? `${Math.round(state.ruler.um / pc)} image px · ${pc} µm/px`
+    : '';
+  $('#rulertoggle').checked = state.ruler.on;
+  drawRuler();
+}
+
+function drawRuler() {
+  const svg = $('#ruler');
+  const r = state.ruler;
+  const live = r.on && r.inside && !!state.data;
+  // The system cursor is hidden only while the ruler is actually drawn in its place.
+  // Switching the ruler on with the pointer already sitting over the image otherwise left
+  // no cursor at all -- the ruler has no position to draw at until the mouse next moves.
+  $('#viewport').classList.toggle('ruler-on', live);
+  // Hidden once the pointer is off the image, too: a ruler parked at the last place the mouse
+  // left is a mark on the picture that means nothing.
+  if (!live) { svg.classList.remove('on'); return; }
+  svg.classList.add('on');
+
+  const half = (r.um / pixconv()) * view.scale / 2;
+  const box = $('#viewport').getBoundingClientRect();
+  const x = r.x - box.left, y = r.y - box.top;
+  setAttrs($('#rulerbar'), { x1: x - half, y1: y, x2: x + half, y2: y });
+  setAttrs($('#rulercap1'), { x1: x - half, y1: y - 6, x2: x - half, y2: y + 6 });
+  setAttrs($('#rulercap2'), { x1: x + half, y1: y - 6, x2: x + half, y2: y + 6 });
+  // The click still lands at a point, and the bar is centred on it -- so the point gets its
+  // own crosshair, standing in for the system cursor the ruler switches off.
+  setAttrs($('#rulerx1'), { x1: x, y1: y - 7, x2: x, y2: y + 7 });
+  setAttrs($('#rulerx2'), { x1: x - 7, y1: y, x2: x + 7, y2: y });
+
+  const label = $('#rulerlabel');
+  // Flipped below the bar near the top edge, where "above" is off-screen.
+  label.setAttribute('x', x);
+  label.setAttribute('y', y < 30 ? y + 22 : y - 12);
+  label.textContent = Number(r.um).toFixed(1) + ' µm';
+}
+
+function setAttrs(el, attrs) {
+  for (const k in attrs) el.setAttribute(k, attrs[k]);
+}
+
+function setRuler(on) {
+  state.ruler.on = on;
+  $('#rulertoggle').checked = on;
+  if (state.data) renderRuler(state.data);
+  else drawRuler();
+  flash(on ? `scale bar cursor on — ${Number(state.ruler.um).toFixed(1)} µm` : 'scale bar cursor off');
+}
+
+function onRulerLength(value) {
+  state.ruler.touched = true;
+  state.ruler.um = Number(value);
+  $('#rulerlenval').textContent = state.ruler.um.toFixed(1) + ' µm';
+  $('#rulernote').textContent =
+    `${Math.round(state.ruler.um / pixconv())} image px · ${pixconv()} µm/px`;
+  // Purely local: the server has no say in a cursor, so there is nothing to debounce.
+  drawRuler();
 }
 
 /* ---------------------------------------------------------------- actions */
@@ -830,6 +941,21 @@ function wire() {
     vp.setPointerCapture(ev.pointerId);
     if (!banding) vp.classList.add('grabbing');
   });
+  // Tracked before the pan handler and independently of it, so the ruler follows the pointer
+  // whether or not a button is down -- it is the cursor, and a cursor does not stop while the
+  // view is being dragged. Page coordinates are stored raw and converted when drawn, so
+  // tracking the pointer costs no layout read while the ruler is off.
+  vp.addEventListener('pointermove', (ev) => {
+    state.ruler.x = ev.clientX;
+    state.ruler.y = ev.clientY;
+    state.ruler.inside = true;
+    if (state.ruler.on) drawRuler();
+  });
+  vp.addEventListener('pointerleave', () => {
+    state.ruler.inside = false;
+    drawRuler();
+  });
+
   vp.addEventListener('pointermove', (ev) => {
     if (!down) return;
     const dx = ev.clientX - down.x, dy = ev.clientY - down.y;
@@ -910,6 +1036,8 @@ function wire() {
   $('#minlen').addEventListener('input', (ev) => onMinLength(ev.target.value));
   $('#circ').addEventListener('input', (ev) => onCircularity(ev.target.value));
   $('#skelwidth').addEventListener('input', (ev) => onSkeletonWidth(ev.target.value));
+  $('#rulertoggle').addEventListener('change', (ev) => setRuler(ev.target.checked));
+  $('#rulerlen').addEventListener('input', (ev) => onRulerLength(ev.target.value));
   // Blurred on the way out: the note this switch raises tells the user to press R, and the
   // keyboard handler ignores keys while a form control has focus.
   $('#rethreshold').addEventListener('change', (ev) => {
@@ -986,6 +1114,7 @@ function wire() {
       case 'u': return doUndo();
       case 'r': return doReset();
       case 'e': return $('#excluded').click();
+      case 'b': return setRuler(!state.ruler.on);
       case 'arrowright': case 'n': ev.preventDefault(); return goto(state.index + 1);
       case 'arrowleft': case 'p': ev.preventDefault(); return goto(state.index - 1);
       case '+': case '=': return $('#zoomin').click();

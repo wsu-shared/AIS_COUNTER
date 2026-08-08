@@ -69,6 +69,18 @@
 
     <svg id="band" class="band"><rect id="bandrect" /></svg>
 
+    <!-- The ruler cursor. Outside the zoom transform like the rubber band, so its bar and
+         label stay crisp 1px chrome; only its *length* is recomputed from the zoom, because
+         that is the one thing about it that has to mean something on the image. -->
+    <svg id="ruler" class="ruler">
+      <line id="rulerbar" class="rulerbar" />
+      <line id="rulercap1" class="rulercap" />
+      <line id="rulercap2" class="rulercap" />
+      <line id="rulerx1" class="rulerx" />
+      <line id="rulerx2" class="rulerx" />
+      <text id="rulerlabel" class="rulerlabel" text-anchor="middle"></text>
+    </svg>
+
     <div id="zoombox">
       <button id="zoomout" title="Zoom out (-)">&minus;</button>
       <span id="zoomlevel">100%</span>
@@ -138,6 +150,20 @@
         <input type="range" id="skelwidth" min="0.5" max="12" step="0.5" value="2"
                title="Stroke width of drawn skeletons, on screen and in the saved PNG">
       </label>
+      <label class="ctl row">
+        <span>scale bar cursor</span>
+        <input type="checkbox" id="rulertoggle"
+               title="Turn the pointer into a scale bar of the length below (B), so you can hold a known distance against anything on the image. It measures in this image's own microns, follows the zoom, and changes nothing — no trace, no measurement and no saved PNG.">
+      </label>
+      <label class="ctl">
+        <span class="ctlhead">
+          <span>scale bar length</span>
+          <output id="rulerlenval">5.0 µm</output>
+        </span>
+        <input type="range" id="rulerlen" min="0" max="50" step="0.5" value="5"
+               title="Length of the scale bar cursor. It starts at the min AIS length — the shortest trace the filter will keep — so the cursor can be held against a trace to see which side of the cut-off it falls on, and runs to 50 µm. Until you move it, it follows the min AIS length slider.">
+        <span id="rulernote" class="ctlnote"></span>
+      </label>
     </div>
 
     <div id="autosave" class="autosave"></div>
@@ -177,6 +203,7 @@
       <tr><td><kbd>U</kbd> <kbd>&#8984;Z</kbd></td><td>undo</td></tr>
       <tr><td><kbd>R</kbd></td><td>reset the image &mdash; back to the automatic detections, or empty if there were none</td></tr>
       <tr><td><kbd>E</kbd></td><td>show / hide excluded traces</td></tr>
+      <tr><td><kbd>B</kbd></td><td>scale bar cursor &mdash; the pointer becomes a bar of a set length in µm</td></tr>
       <tr><td><kbd>+</kbd> <kbd>&minus;</kbd> <kbd>0</kbd></td><td>zoom in / out / fit</td></tr>
       <tr><td colspan="2" class="sep">Scroll to zoom, drag to pan, double-click to zoom in.</td></tr>
       <tr><td><kbd>?</kbd></td><td>this help</td></tr>

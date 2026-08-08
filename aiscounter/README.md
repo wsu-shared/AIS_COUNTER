@@ -126,6 +126,7 @@ loaded in the background while you work on the current one.
 | `U` / `⌘Z` | undo |
 | `R` | reset the image — back to the automatic detections, or empty if there were none |
 | `E` | show / hide excluded traces |
+| `B` | scale bar cursor — the pointer becomes a bar of a set length in µm |
 | `+` `-` `0` | zoom in / out / fit |
 | `?` | keyboard help |
 
@@ -314,6 +315,19 @@ Neither slider ever overrules you: traces you have added, deleted, joined or spl
 state you gave them however far either moves. A slider is a default; a click is a decision. If
 a loop really is an axon doubling back, click it to put it back and the filter will leave it
 alone from then on.
+
+The **scale bar cursor** (`B`, or the checkbox in the sidebar) turns the pointer into a bar of
+a stated length in microns, so a distance can be held against the picture instead of estimated
+from it — whether a trace is over the cut-off, how far apart two processes are, how much of an
+axon the markers actually cover. Its **scale bar length** slider runs from the current **min
+AIS length** to 50 µm, and until you move it the bar *is* that minimum: the cursor is then a
+picture of the cut-off the filter is applying, and laying it along a trace answers "would this
+one survive?" without touching the filter. The bar is drawn in the image's own calibration —
+the pixel size from the CZI metadata where there is one, else the original's 0.161 µm/px, the
+same number every measurement uses — and it is stated under the slider along with the length in
+image pixels. It follows the zoom, so it always covers the same distance on the specimen. It is
+a lens and nothing more: no trace, no measurement, no report and no saved PNG is affected by
+it, and it is off by default.
 
 **Skeleton colour** is magenta by default — the channel these images never occupy, so a trace
 cannot be mistaken for signal the way a green or white one can. **Skeleton thickness** sets how

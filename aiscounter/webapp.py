@@ -403,6 +403,11 @@ class Session:
                     "total": len(self.paths),
                     "width": int(result.image.raw.shape[1]),
                     "height": int(result.image.raw.shape[0]),
+                    # Microns per pixel, as this image was calibrated -- from its own CZI
+                    # metadata where there is any, else the original's constant. The reviewer
+                    # needs it to draw a ruler of a stated length, and it is per image rather
+                    # than per session because a folder can mix acquisitions.
+                    "pixconv": round(float(result.image.pixconv), 6),
                     "derived": bool(result.image.processed_is_derived),
                     "threshold": round(float(result.segmentation.threshold), 6),
                     "components": result.segmentation.n_components,
